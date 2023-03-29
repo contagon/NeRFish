@@ -1,33 +1,22 @@
 import os
-import warnings
 
 import hydra
+import imageio
 import numpy as np
 import torch
 import tqdm
-import imageio
-
 from omegaconf import DictConfig
-from PIL import Image
-import matplotlib.pyplot as plt
 
 from fish_nerf.implicit import volume_dict
-from fish_nerf.sampler import sampler_dict
-from fish_nerf.renderer import renderer_dict
-from utils.render import (
-    create_surround_cameras,
-    render_images,
-)
 from fish_nerf.ray import (
-    sample_images_at_xy,
-    get_pixels_from_image,
     get_random_pixels_from_image,
-    get_rays_from_pixels
+    get_rays_from_pixels,
+    sample_images_at_xy,
 )
-from utils.dataset import (
-    get_dataset,
-    trivial_collate,
-)
+from fish_nerf.renderer import renderer_dict
+from fish_nerf.sampler import sampler_dict
+from utils.dataset import get_dataset, trivial_collate
+from utils.render import create_surround_cameras, render_images
 
 np.set_printoptions(suppress=True, precision=3)
 
@@ -36,11 +25,9 @@ np.set_printoptions(suppress=True, precision=3)
 #   2) Sampling scheme which generates sample points along rays
 #   3) Renderer which can render an implicit volume given a sampling scheme
 
+
 class Model(torch.nn.Module):
-    def __init__(
-        self,
-        cfg
-    ):
+    def __init__(self, cfg):
         super().__init__()
 
         # Get implicit function from config
@@ -49,42 +36,31 @@ class Model(torch.nn.Module):
         )
 
         # Point sampling (raymarching) scheme
-        self.sampler = sampler_dict[cfg.sampler.type](
-            cfg.sampler
-        )
+        self.sampler = sampler_dict[cfg.sampler.type](cfg.sampler)
 
         # Initialize volume renderer
-        self.renderer = renderer_dict[cfg.renderer.type](
-            cfg.renderer
-        )
-    
-    def forward(
-        self,
-        ray_bundle
-    ):
+        self.renderer = renderer_dict[cfg.renderer.type](cfg.renderer)
+
+    def forward(self, ray_bundle):
         # Call renderer with
         #  a) Implicit volume
         #  b) Sampling routine
 
-        return self.renderer(
-            self.sampler,
-            self.implicit_fn,
-            ray_bundle
-        )
+        return self.renderer(self.sampler, self.implicit_fn, ray_bundle)
 
 
 def create_model(cfg):
     # Create model
     model = Model(cfg)
-    model.cuda(); model.train()
+    model.cuda()
+    model.train()
 
     # Load checkpoints
     optimizer_state_dict = None
     start_epoch = 0
 
     checkpoint_path = os.path.join(
-        hydra.utils.get_original_cwd(),
-        cfg.training.checkpoint_path
+        hydra.utils.get_original_cwd(), cfg.training.checkpoint_path
     )
 
     if len(cfg.training.checkpoint_path) > 0:
@@ -125,9 +101,8 @@ def create_model(cfg):
 
     return model, optimizer, lr_scheduler, start_epoch, checkpoint_path
 
-def train(
-    cfg
-):
+
+def train(cfg):
     # Create model
     model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg)
 
@@ -159,23 +134,21 @@ def train(
             xy_grid = get_random_pixels_from_image(
                 cfg.training.batch_size, cfg.data.image_size, camera
             )
-            ray_bundle = get_rays_from_pixels(
-                xy_grid, cfg.data.image_size, camera
-            )
+            ray_bundle = get_rays_from_pixels(xy_grid, cfg.data.image_size, camera)
             rgb_gt = sample_images_at_xy(image, xy_grid)
 
             # Run model forward
             out = model(ray_bundle)
 
             # Calculate loss
-            loss = torch.nn.functional.mse_loss(out['feature'], rgb_gt)
+            loss = torch.nn.functional.mse_loss(out["feature"], rgb_gt)
 
             # Take the training step.
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            t_range.set_description(f'Epoch: {epoch:04d}, Loss: {loss:.06f}')
+            t_range.set_description(f"Epoch: {epoch:04d}, Loss: {loss:.06f}")
             t_range.refresh()
 
         # Adjust the learning rate.
@@ -198,41 +171,45 @@ def train(
             torch.save(data_to_store, checkpoint_path)
 
         # Render
-        if (
-            epoch % cfg.training.render_interval == 0
-            and epoch > 0
-        ):
+        if epoch % cfg.training.render_interval == 0 and epoch > 0:
             with torch.no_grad():
                 test_images = render_images(
-                    model, create_surround_cameras(4.0, n_poses=20, up=(0.0, 0.0, 1.0), focal_length=2.0),
-                    cfg.data.image_size, file_prefix='nerf'
+                    model,
+                    create_surround_cameras(
+                        4.0, n_poses=20, up=(0.0, 0.0, 1.0), focal_length=2.0
+                    ),
+                    cfg.data.image_size,
+                    file_prefix="nerf",
                 )
-                imageio.mimsave(f'results/training_{epoch}.gif', [np.uint8(im * 255) for im in test_images])
+                imageio.mimsave(
+                    f"results/training_{epoch}.gif",
+                    [np.uint8(im * 255) for im in test_images],
+                )
 
 
-def render(cfg,):
+def render(
+    cfg,
+):
     # Create model
     model = Model(cfg)
-    model = model.cuda(); model.eval()
+    model = model.cuda()
+    model.eval()
 
     # Render spiral
     cameras = create_surround_cameras(3.0, n_poses=20)
-    all_images = render_images(
-        model, cameras, cfg.data.image_size
-    )
-    imageio.mimsave('results/3d_revolve.gif', [np.uint8(im * 255) for im in all_images])
+    all_images = render_images(model, cameras, cfg.data.image_size)
+    imageio.mimsave("results/3d_revolve.gif", [np.uint8(im * 255) for im in all_images])
 
 
-@hydra.main(config_path='./configs', config_name='sphere', version_base=None)
+@hydra.main(config_path="./configs", config_name="sphere", version_base=None)
 def main(cfg: DictConfig):
     os.chdir(hydra.utils.get_original_cwd())
 
-    if cfg.type == 'render':
+    if cfg.type == "render":
         render(cfg)
-    elif cfg.type == 'train':
+    elif cfg.type == "train":
         train(cfg)
 
 
 if __name__ == "__main__":
     main()
-

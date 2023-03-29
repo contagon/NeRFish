@@ -3,6 +3,7 @@ import torch.nn.functional as F
 
 from fish_nerf.ray import RayBundle
 
+
 class HarmonicEmbedding(torch.nn.Module):
     def __init__(
         self,
@@ -50,7 +51,7 @@ class LinearWithRepeat(torch.nn.Linear):
         output1 = F.linear(input[0], self.weight[:, :n1], self.bias)
         output2 = F.linear(input[1], self.weight[:, n1:], None)
         out_size = output1.shape[1]
-        tog =  output1.view(-1, rays, out_size) + output2.unsqueeze(0)
+        tog = output1.view(-1, rays, out_size) + output2.unsqueeze(0)
         return tog.view(-1, out_size)
 
 
@@ -134,9 +135,13 @@ class NeuralRadianceField(torch.nn.Module):
         do_xavier(self.density_layers[0])
 
         # Networks for color
-        self.color1 = torch.nn.Linear(cfg.n_hidden_neurons_xyz, cfg.n_hidden_neurons_xyz)
+        self.color1 = torch.nn.Linear(
+            cfg.n_hidden_neurons_xyz, cfg.n_hidden_neurons_xyz
+        )
         self.color2 = torch.nn.Sequential(
-            LinearWithRepeat(cfg.n_hidden_neurons_xyz + embedding_dim_dir, cfg.n_hidden_neurons_dir),
+            LinearWithRepeat(
+                cfg.n_hidden_neurons_xyz + embedding_dim_dir, cfg.n_hidden_neurons_dir
+            ),
             torch.nn.ReLU(True),
             torch.nn.Linear(cfg.n_hidden_neurons_dir, 3),
             torch.nn.Sigmoid(),
@@ -145,7 +150,7 @@ class NeuralRadianceField(torch.nn.Module):
         do_xavier(self.color2[0])
         do_xavier(self.color2[2])
 
-    def forward(self, ray_bundle : RayBundle):
+    def forward(self, ray_bundle: RayBundle):
         # Get points
         points = ray_bundle.sample_points.view(-1, 3)
 
@@ -166,10 +171,7 @@ class NeuralRadianceField(torch.nn.Module):
 
         return final
 
-        
-
-
 
 volume_dict = {
-    'nerf': NeuralRadianceField,
+    "nerf": NeuralRadianceField,
 }

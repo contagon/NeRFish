@@ -1,16 +1,12 @@
-import math
-from typing import List, NamedTuple
-
 import torch
 import torch.nn.functional as F
-from pytorch3d.renderer.cameras import CamerasBase
-
 
 # Convenience class wrapping several ray inputs:
 #   1) Origins -- ray origins
 #   2) Directions -- ray directions
 #   3) Sample points -- sample points along ray direction from ray origin
 #   4) Sample lengths -- distance of sample points from ray origin
+
 
 class RayBundle(object):
     def __init__(
@@ -60,7 +56,7 @@ class RayBundle(object):
     def _replace(self, **kwargs):
         for key in kwargs.keys():
             setattr(self, key, kwargs[key])
-        
+
         return self
 
 
@@ -70,7 +66,7 @@ def sample_images_at_xy(
     xy_grid: torch.Tensor,
 ):
     batch_size = images.shape[0]
-    spatial_size = images.shape[1:-1]
+    images.shape[1:-1]
 
     xy_grid = -xy_grid.view(batch_size, -1, 1, 2)
 
@@ -91,12 +87,12 @@ def get_pixels_from_image(image_size, camera):
     # Generate pixel coordinates from [0, W] in x and [0, H] in y
 
     # Convert to the range [-1, 1] in both x and y
-    x = torch.linspace(-1,1,W)
-    y = torch.linspace(-1,1,H)
+    x = torch.linspace(-1, 1, W)
+    y = torch.linspace(-1, 1, H)
 
     # Create grid of coordinates
     xy_grid = torch.stack(
-        tuple( reversed( torch.meshgrid(y, x) ) ),
+        tuple(reversed(torch.meshgrid(y, x))),
         dim=-1,
     ).view(W * H, 2)
 
@@ -106,7 +102,7 @@ def get_pixels_from_image(image_size, camera):
 # Random subsampling of pixels from an image
 def get_random_pixels_from_image(n_pixels, image_size, camera):
     xy_grid = get_pixels_from_image(image_size, camera)
-    
+
     # Random subsampling of pixel coordinates
     rand_idx = torch.randperm(xy_grid.shape[0])
     xy_grid_sub = xy_grid[rand_idx[:n_pixels]].cuda()
@@ -114,27 +110,23 @@ def get_random_pixels_from_image(n_pixels, image_size, camera):
     # Return
     return xy_grid_sub.reshape(-1, 2)[:n_pixels]
 
+
 # TODO: This needs to be tweaked to work with fisheye lenses
 # Get rays from pixel values
 def get_rays_from_pixels(xy_grid, image_size, camera):
-    W, H = image_size[0], image_size[1]
+    # W, H = image_size[0], image_size[1]
 
     # Map pixels to points on the image plane at Z=1
     ndc_points = xy_grid
-    ndc_points = torch.cat(
-        [
-            ndc_points,
-            torch.ones_like(ndc_points[..., -1:])
-        ],
-        dim=-1
-    )
+    ndc_points = torch.cat([ndc_points, torch.ones_like(ndc_points[..., -1:])], dim=-1)
 
-    # Use camera.unproject to get world space points on the image plane from NDC space points
+    # Use camera.unproject to get world space points
+    # on the image plane from NDC space points
     rays_d = camera.unproject_points(ndc_points.cuda())
 
     # Get ray origins from camera center
     # Camera center is defined backwards
-    rays_o = -camera.T@camera.R[0].T
+    rays_o = -camera.T @ camera.R[0].T
     rays_o = rays_o.repeat(rays_d.shape[0], 1)
 
     # Get normalized ray directions

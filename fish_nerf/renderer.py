@@ -1,50 +1,40 @@
 import torch
 
-from typing import List, Optional, Tuple
-from pytorch3d.renderer.cameras import CamerasBase
-
 
 # Volume renderer which integrates color and density along rays
 # according to the equations defined in [Mildenhall et al. 2020]
 class VolumeRenderer(torch.nn.Module):
-    def __init__(
-        self,
-        cfg
-    ):
+    def __init__(self, cfg):
         super().__init__()
 
         self._chunk_size = cfg.chunk_size
-        self._white_background = cfg.white_background if 'white_background' in cfg else False
+        self._white_background = (
+            cfg.white_background if "white_background" in cfg else False
+        )
 
-    def _compute_weights(
-        self,
-        deltas,
-        rays_density: torch.Tensor,
-        eps: float = 1e-10
-    ):
+    def _compute_weights(self, deltas, rays_density: torch.Tensor, eps: float = 1e-10):
         # Compute transmittance using the equation described in the README
         weights = torch.exp(-deltas * rays_density)
 
         # Shift it all over by one
         T = torch.cumprod(weights, dim=1)
-        T = torch.cat((
-            torch.ones_like(T[:, :1]),
-            T[:,:-1],
-        ), dim=1)
+        T = torch.cat(
+            (
+                torch.ones_like(T[:, :1]),
+                T[:, :-1],
+            ),
+            dim=1,
+        )
 
         # Compute final weights
         weights = T * (1 - weights)
 
         # Compute weight used for rendering from transmittance and density
         return weights
-    
-    def _aggregate(
-        self,
-        weights: torch.Tensor,
-        rays_feature: torch.Tensor
-    ):
+
+    def _aggregate(self, weights: torch.Tensor, rays_feature: torch.Tensor):
         # Aggregate (weighted sum of) features using weights
-        feature = (weights*rays_feature).sum(dim=1)
+        feature = (weights * rays_feature).sum(dim=1)
 
         return feature
 
@@ -60,7 +50,7 @@ class VolumeRenderer(torch.nn.Module):
         chunk_outputs = []
 
         for chunk_start in range(0, B, self._chunk_size):
-            cur_ray_bundle = ray_bundle[chunk_start:chunk_start+self._chunk_size]
+            cur_ray_bundle = ray_bundle[chunk_start : chunk_start + self._chunk_size]
 
             # Sample points along the ray
             cur_ray_bundle = sampler(cur_ray_bundle)
@@ -68,8 +58,8 @@ class VolumeRenderer(torch.nn.Module):
 
             # Call implicit function with sample points
             implicit_output = implicit_fn(cur_ray_bundle)
-            density = implicit_output['density']
-            feature = implicit_output['feature']
+            density = implicit_output["density"]
+            feature = implicit_output["feature"]
 
             # Compute length of each ray segment
             depth_values = cur_ray_bundle.sample_lengths[..., 0]
@@ -83,35 +73,30 @@ class VolumeRenderer(torch.nn.Module):
 
             # Compute aggregation weights
             weights = self._compute_weights(
-                deltas.view(-1, n_pts, 1),
-                density.view(-1, n_pts, 1)
-            ) 
+                deltas.view(-1, n_pts, 1), density.view(-1, n_pts, 1)
+            )
 
             # Render (color) features using weights
             feature = self._aggregate(weights, feature.view(-1, n_pts, 3))
 
             # Render depth map
-            depth  = self._aggregate(weights, depth_values.view(-1, n_pts, 1))
+            depth = self._aggregate(weights, depth_values.view(-1, n_pts, 1))
 
             # Return
             cur_out = {
-                'feature': feature,
-                'depth': depth,
+                "feature": feature,
+                "depth": depth,
             }
 
             chunk_outputs.append(cur_out)
 
         # Concatenate chunk outputs
         out = {
-            k: torch.cat(
-              [chunk_out[k] for chunk_out in chunk_outputs],
-              dim=0
-            ) for k in chunk_outputs[0].keys()
+            k: torch.cat([chunk_out[k] for chunk_out in chunk_outputs], dim=0)
+            for k in chunk_outputs[0].keys()
         }
 
         return out
 
 
-renderer_dict = {
-    'volume': VolumeRenderer
-}
+renderer_dict = {"volume": VolumeRenderer}

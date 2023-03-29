@@ -1,23 +1,15 @@
 import sys
-sys.path.append('../fish_nerf')
-import torch
 
-import numpy as np
-from PIL import Image
+sys.path.append("../fish_nerf")
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from pytorch3d.renderer import PerspectiveCameras  # noqa: E402
+from pytorch3d.renderer import look_at_view_transform  # noqa: E402
 
-import matplotlib.pyplot as plt
-import torch
+from fish_nerf.ray import get_pixels_from_image  # noqa: E402
+from fish_nerf.ray import get_rays_from_pixels  # noqa: E402
 
-from pytorch3d.renderer import look_at_view_transform
-from pytorch3d.renderer import (
-    PerspectiveCameras,
-    look_at_view_transform
-)
-
-from fish_nerf.ray import (
-    get_pixels_from_image,
-    get_rays_from_pixels
-)
 
 def create_surround_cameras(radius, n_poses=20, up=(0.0, 1.0, 0.0), focal_length=1.0):
     """
@@ -26,11 +18,18 @@ def create_surround_cameras(radius, n_poses=20, up=(0.0, 1.0, 0.0), focal_length
     cameras = []
 
     for theta in np.linspace(0, 2 * np.pi, n_poses + 1)[:-1]:
-
         if np.abs(up[1]) > 0:
-            eye = [np.cos(theta + np.pi / 2) * radius, 0, -np.sin(theta + np.pi / 2) * radius]
+            eye = [
+                np.cos(theta + np.pi / 2) * radius,
+                0,
+                -np.sin(theta + np.pi / 2) * radius,
+            ]
         else:
-            eye = [np.cos(theta + np.pi / 2) * radius, np.sin(theta + np.pi / 2) * radius, 2.0]
+            eye = [
+                np.cos(theta + np.pi / 2) * radius,
+                np.sin(theta + np.pi / 2) * radius,
+                2.0,
+            ]
 
         R, T = look_at_view_transform(
             eye=(eye,),
@@ -46,18 +45,13 @@ def create_surround_cameras(radius, n_poses=20, up=(0.0, 1.0, 0.0), focal_length
                 T=T,
             )
         )
-    
+
     return cameras
 
 
-def render_images(
-    model,
-    cameras,
-    image_size,
-    save=False,
-    file_prefix=''
-):
-    # TODO: Make this work for both regular / fisheye cameras (would be cool to see it for both!)
+def render_images(model, cameras, image_size, save=False, file_prefix=""):
+    # TODO: Make this work for both regular / fisheye cameras
+    # (would be cool to see renders for both!)
     """
     Render a list of images from the given viewpoints.
 
@@ -66,7 +60,7 @@ def render_images(
     device = list(model.parameters())[0].device
 
     for cam_idx, camera in enumerate(cameras):
-        print(f'Rendering image {cam_idx}')
+        print(f"Rendering image {cam_idx}")
 
         torch.cuda.empty_cache()
         camera = camera.to(device)
@@ -78,24 +72,17 @@ def render_images(
 
         # Return rendered features (colors)
         image = np.array(
-            out['feature'].view(
-                image_size[1], image_size[0], 3
-            ).detach().cpu()
+            out["feature"].view(image_size[1], image_size[0], 3).detach().cpu()
         )
         all_images.append(image)
 
         # Visualize depth
-        if cam_idx == 2 and file_prefix == '':
-            depth = out["depth"].view(
-                image_size[1], image_size[0]
-            ).detach().cpu()
+        if cam_idx == 2 and file_prefix == "":
+            depth = out["depth"].view(image_size[1], image_size[0]).detach().cpu()
             plt.imsave("data/depth.png", depth)
 
         # Save
         if save:
-            plt.imsave(
-                f'{file_prefix}_{cam_idx}.png',
-                image
-            )
-    
+            plt.imsave(f"{file_prefix}_{cam_idx}.png", image)
+
     return all_images
