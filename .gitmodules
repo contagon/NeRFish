@@ -1,0 +1,6 @@
+[submodule "image_resampling/image_sampler"]
+	path = image_resampling/image_sampler
+	url = git@github.com:castacks/image_sampler.git
+[submodule "image_resampling/mvs_utils"]
+	path = image_resampling/mvs_utils
+	url = git@github.com:castacks/mvs_utils.git
