@@ -1,14 +1,14 @@
 # General imports.
 import os
+
 import hydra
 import imageio
 import numpy as np
 import torch
 import tqdm
 from omegaconf import DictConfig
-import sys
 
-from fish_nerf.implicit import volume_dict
+from fish_nerf.models import volume_dict
 from fish_nerf.ray import (
     get_random_pixels_from_image,
     get_rays_from_pixels,
@@ -16,22 +16,19 @@ from fish_nerf.ray import (
 )
 from fish_nerf.renderer import renderer_dict
 from fish_nerf.sampler import sampler_dict
+from image_resampling.mvs_utils.camera_models import LinearSphere
+from image_resampling.mvs_utils.shape_struct import ShapeStruct
 from utils.dataset import get_dataset, trivial_collate
 from utils.render import create_surround_cameras, render_images
 
 np.set_printoptions(suppress=True, precision=3)
 
-# Local imports.
-sys.path.append('..')
-from image_resampling.mvs_utils.camera_models import LinearSphere
-from image_resampling.mvs_utils.shape_struct import ShapeStruct
-from utils.dataset import TartanAirDataset
-
 # Some geometry that we need for conversions.
-R_ned_cam = torch.tensor([[0, 0, 1, 0],
-                            [1, 0, 0, 0],
-                            [0, 1, 0, 0],
-                            [0, 0, 0, 1]]).view(4, 4).float()
+R_ned_cam = (
+    torch.tensor([[0, 0, 1, 0], [1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1]])
+    .view(4, 4)
+    .float()
+)
 
 
 # Model class containing:
@@ -45,11 +42,12 @@ class Model(torch.nn.Module):
         super().__init__()
 
         # Create the camera model. These are the intrinsics. of the dataset.
-        linsphere_camera_model = LinearSphere(
-                    fov_degree = cfg.fov_degree, 
-                    shape_struct = ShapeStruct(256, 256),
-                    in_to_tensor=False, 
-                    out_to_numpy=False)
+        LinearSphere(
+            fov_degree=cfg.fov_degree,
+            shape_struct=ShapeStruct(256, 256),
+            in_to_tensor=False,
+            out_to_numpy=False,
+        )
 
         # Get implicit function from config
         self.implicit_fn = volume_dict[cfg.implicit_function.type](
@@ -68,6 +66,7 @@ class Model(torch.nn.Module):
         #  b) Sampling routine
 
         return self.renderer(self.sampler, self.implicit_fn, ray_bundle)
+
 
 def create_model(cfg):
     # Create model
@@ -123,8 +122,8 @@ def create_model(cfg):
 
 
 def train(cfg):
-
-    # Image shape and size. Be convention, the image shape is [H, W] and the image size is [W, H].
+    # Image shape and size. Be convention,
+    # the image shape is [H, W] and the image size is [W, H].
     image_size = [cfg.data.image_shape[1], cfg.data.image_shape[0]]
 
     # Create model
@@ -138,7 +137,7 @@ def train(cfg):
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_size=1, # One image at a time, and the batches are of ray samples.
+        batch_size=1,  # One image at a time, and the batches are of ray samples.
         shuffle=True,
         num_workers=0,
         collate_fn=trivial_collate,
@@ -149,8 +148,16 @@ def train(cfg):
         t_range = tqdm.tqdm(enumerate(train_dataloader))
 
         for iteration, batch in t_range:
-            image, pose = batch[0] # Batches are not collated, so `batch` is a list of samples. Take the first one only. NOTE(yoraish): This means that a batch size larger than 1 passed to the torch.utils.data.DataLoader will be a waste of work, and the first sample in the batch will be used (and incorreectly so, since we'll try to index into the tensor and things will probably break).
+            # Batches are not collated, so `batch` is a list of samples.
+            # Take the first one only. NOTE(yoraish): This means that a batch size
+            # larger than 1 passed to the torch.utils.data.DataLoader will be a
+            # waste of work, and the first sample in the batch will be used
+            # (and incorreectly so, since we'll try to index into the tensor and
+            # things will probably break).
+            image, pose = batch[0]
             image = image.cuda().unsqueeze(0)
+            # TODO Setup camera
+            camera = None
             camera = camera.cuda()
 
             # Sample rays
