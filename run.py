@@ -20,7 +20,7 @@ from fish_nerf.ray import (
 from fish_nerf.renderer import renderer_dict
 from fish_nerf.sampler import sampler_dict
 from utils.dataset import get_dataset, trivial_collate
-from utils.render import create_surround_cameras, render_images
+from utils.render import create_surround_cameras, render_images, render_images_in_poses
 
 np.set_printoptions(suppress=True, precision=3)
 
@@ -235,16 +235,28 @@ def train(cfg):
         if epoch % cfg.training.render_interval == 0 and epoch > 0:
             with torch.no_grad():
 
-                # Choose a random camera pose.
-                random_pose = random.sample(seen_camera_poses, 1)[0]
-                random_pose = np.array(random_pose)
-                print(f"Rendering at pose {random_pose}.")
 
-                test_images = render_images(
-                    model,
-                    translation = random_pose[0:3],
-                    num_images=20,
-                )
+
+                # We can rednder images in a given pose, outputting a list of images showing the camera rotating around its own axis.
+                # Choose a random camera pose.
+                if cfg.vis_style == "random_pose":
+                    random_pose = random.sample(seen_camera_poses, 1)[0]
+                    random_pose = np.array(random_pose)
+                    print(f"Rendering at pose {random_pose}.")
+                    test_images = render_images(
+                        model,
+                        translation = random_pose[0:3],
+                        num_images=20,
+                    )
+                
+                # We can also use a torch dataset to render images. The poses from the dataset are used as input to the model and the output is rendered, concaternated with the ground truth image, and returned. Note that we can also optionally fix the heading of the camera to xyzw = 0001.
+                if cfg.vis_style == "trajectory":
+                    test_images = render_images_in_poses(
+                        model,
+                        train_dataset,
+                        num_images=100,
+                        fix_heading = True
+                    )
 
                 imageio.mimsave(
                     f"results/training_{epoch}.gif",
