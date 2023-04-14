@@ -21,6 +21,8 @@ class StratifiedRaysampler(torch.nn.Module):
         ).cuda()[:, None, None]
 
         # Sample points from z values
+        ray_bundle.origins = ray_bundle.origins.cuda()
+        ray_bundle.directions = ray_bundle.directions.cuda()
         sample_points = ray_bundle.origins + ray_bundle.directions * z_vals
         sample_points = sample_points.transpose(0, 1).contiguous()
 

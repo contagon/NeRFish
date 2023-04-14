@@ -4,7 +4,7 @@ type: train
 
 training:
   num_epochs: 10000
-  batch_size: 4096
+  batch_size: 1024
   lr: 0.0005
 
   lr_scheduler_step_size: 1000
@@ -14,11 +14,11 @@ training:
   checkpoint_interval: 1000
   resume: True
 
-  render_interval: 10
+  render_interval: 20
 
 data:
   image_shape: [256, 256]
-  image_fov: 195
+  fov_degree: 195
   traj_data_root: tartanair/Sewerage/Data_hard/P000
 
 renderer:
@@ -42,3 +42,5 @@ implicit_function:
   density_noise_std: 0.0
   n_layers_xyz: 6
   append_xyz: [4]
+
+debug: False
