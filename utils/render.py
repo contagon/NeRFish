@@ -67,7 +67,7 @@ def render_images(model, translation, num_images, save=False, file_prefix=""):
         pose = np.array([*translation, *quat])
 
         pixel_coords, pixel_xys = get_pixels_from_image(
-            model.camera_model, valid_mask=model.valid_mask, filter_valid=False
+            model.camera_model, valid_mask=model.valid_mask, filter_valid=True
         )
 
         # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
@@ -80,16 +80,9 @@ def render_images(model, translation, num_images, save=False, file_prefix=""):
         out = model(ray_bundle)
 
         # Return rendered features (colors)
-        image_size = model.camera_model.ss.W, model.camera_model.ss.H
-        image = np.array(
-            out["feature"].view(image_size[1], image_size[0], 3).detach().cpu()
-        )
+        image = np.zeros((model.camera_model.ss.W, model.camera_model.ss.H, 3))
+        image[model.valid_mask == 1, :] = out["feature"].cpu().detach().numpy()
         all_images.append(image)
-
-        # Visualize depth
-        if theta == 2 and file_prefix == "":
-            depth = out["depth"].view(image_size[1], image_size[0]).detach().cpu()
-            plt.imsave("data/depth.png", depth)
 
         # Save
         if save:

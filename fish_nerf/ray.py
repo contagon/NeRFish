@@ -174,7 +174,7 @@ def get_rays_from_pixels(pixel_coords, camera, X_ned_cam, camera_pose_ned, debug
 
     # Transform the rays from the camera's coordinate system to the base coordinate system, which is NED.
     # Rays in the base frame NED.
-    X_ned_cam = torch.tensor(X_ned_cam, device=x_cam_rays.device)
+    X_ned_cam = X_ned_cam.to(x_cam_rays.device)
     x_base_rays = X_ned_cam @ x_cam_rays
     x_base_rays = x_base_rays.to(device=x_cam_rays.device)
     
@@ -189,7 +189,7 @@ def get_rays_from_pixels(pixel_coords, camera, X_ned_cam, camera_pose_ned, debug
     X_world_base[:3, :3] = torch.tensor(Rotation.from_quat(camera_pose_ned[3:]).as_matrix()).to(device=x_base_rays.device)
     R_world_base = X_world_base[:3, :3]
     rays_d = R_world_base @ x_base_rays[:3]
-    rays_d = rays_d.view(-1, 3)
+    rays_d = rays_d.T.contiguous()
 
     if debug:
         # Visualize the rays.   
@@ -220,8 +220,7 @@ def get_rays_from_pixels(pixel_coords, camera, X_ned_cam, camera_pose_ned, debug
         # Visualize the rays.
         fig3 = plt.figure()
         ax = fig3.add_subplot(111, projection='3d')
-        x_rays_d = rays_d.view(3, -1)
-        ax.scatter(x_rays_d.cpu()[0], x_rays_d.cpu()[1], x_rays_d.cpu()[2], c='r', marker='o')
+        ax.scatter(rays_d.cpu()[:,0], rays_d.cpu()[:,1], rays_d.cpu()[:,2], c='r', marker='o')
         ax.set_xlabel('X Label')
         ax.set_ylabel('Y Label')
         ax.set_zlabel('Z Label')
