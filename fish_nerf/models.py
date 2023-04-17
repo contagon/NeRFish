@@ -229,16 +229,18 @@ class LinearSphereModel(nn.Module):
 
 
     def forward(self):
-        # TODO: Should we optimize over a scale or an additive delta?
-        return self.fov + self.delta
+        # Rather than use additive delta here, NeRF-- uses a scale squared
+        return self.fov * self.delta**2
 
     @property
     def model(self):
-        return LinearSphere(
+        fish = LinearSphere(
             fov_degree = self.forward(), 
             shape_struct = ShapeStruct(256, 256),
             in_to_tensor=False, 
             out_to_numpy=False)
+        fish.device = self.delta.device
+        return fish
 
 volume_dict = {
     "nerf": NeuralRadianceField,

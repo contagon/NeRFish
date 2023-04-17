@@ -9,7 +9,7 @@ import tqdm
 from omegaconf import DictConfig
 import matplotlib.pyplot as plt
 
-from fish_nerf.models import volume_dict
+from fish_nerf.models import volume_dict, LinearSphereModel, Pose
 from fish_nerf.ray import (
     get_random_pixels_from_image,
     get_rays_from_pixels,
@@ -34,16 +34,6 @@ np.set_printoptions(suppress=True, precision=3)
 class Model(torch.nn.Module):
     def __init__(self, cfg):
         super().__init__()
-
-        # Create the camera model. These are the intrinsics. of the dataset.
-        self.camera_model = LinearSphere(
-                    fov_degree = cfg.data.fov_degree, 
-                    shape_struct = ShapeStruct(256, 256),
-                    in_to_tensor=False, 
-                    out_to_numpy=False)
-        
-        self.valid_mask = self.camera_model.get_valid_mask()
-
 
         # Some geometry that we need for conversions.
         self.X_ned_cam = torch.tensor([[0, 0, 1, 0],
@@ -71,10 +61,14 @@ class Model(torch.nn.Module):
 
 
 def create_model(cfg):
-    # Create model
+    # Create models
     model = Model(cfg)
     model.cuda()
     model.train()
+
+    camera = LinearSphereModel(cfg.data.fov_degree, req_grad=cfg.training.train_intrinsics)
+    camera.cuda()
+    camera.train()
 
     # Load checkpoints
     optimizer_state_dict = None
@@ -93,7 +87,9 @@ def create_model(cfg):
         if cfg.training.resume and os.path.isfile(checkpoint_path):
             print(f"Resuming from checkpoint {checkpoint_path}.")
             loaded_data = torch.load(checkpoint_path)
+
             model.load_state_dict(loaded_data["model"])
+            camera.load_state_dict(loaded_data["camera"])
             start_epoch = loaded_data["epoch"]
 
             print(f"   => resuming from epoch {start_epoch}.")
@@ -101,7 +97,7 @@ def create_model(cfg):
 
     # Initialize the optimizer.
     optimizer = torch.optim.Adam(
-        model.parameters(),
+        list(model.parameters()) + list(camera.parameters()),
         lr=cfg.training.lr,
     )
 
@@ -120,7 +116,7 @@ def create_model(cfg):
         optimizer, lr_lambda, last_epoch=start_epoch - 1, verbose=False
     )
 
-    return model, optimizer, lr_scheduler, start_epoch, checkpoint_path
+    return model, camera, optimizer, lr_scheduler, start_epoch, checkpoint_path
 
 
 def train(cfg):
@@ -131,7 +127,7 @@ def train(cfg):
     image_size = [cfg.data.image_shape[1], cfg.data.image_shape[0]]
 
     # Create model
-    model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg)
+    model, camera, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg)
 
     # Load the training/validation data.
     train_dataset, val_dataset = get_dataset(
@@ -160,12 +156,12 @@ def train(cfg):
 
             # Sample rays. The xy grid is of shape (2, N), where N is the number of rays. The first row is the x (column) coordinates, and the second row is the y (row) coordinates. By convention, the image origin is top left, and the x axis is to the right, and the y axis is down.
             pixel_coords, pixel_xys = get_random_pixels_from_image(
-                cfg.training.batch_size, image_size, model.camera_model
+                cfg.training.batch_size, image_size, camera.model
             )
 
             if cfg.debug:
                 # Show the valid mask.
-                image_np = model.camera_model.get_valid_mask().cpu().numpy()
+                image_np = camera.model.get_valid_mask().cpu().numpy()
                 plt.imshow(image_np)
                 plt.show()
 
@@ -176,7 +172,7 @@ def train(cfg):
                 plt.show()
 
             # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
-            ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=cfg.debug)
+            ray_bundle = get_rays_from_pixels(pixel_coords, camera.model, model.X_ned_cam, pose, debug=cfg.debug)
           
             # Sample the image at the sampled pixels. rgb_gt is of shape (N, 3), where N is the number of rays.
             rgb_gt = image[:, :, pixel_coords[1, :].long(), pixel_coords[0, :].long()].squeeze(0).transpose(0, 1)
@@ -192,7 +188,7 @@ def train(cfg):
             loss.backward()
             optimizer.step()
 
-            t_range.set_description(f"Epoch: {epoch:04d}, Loss: {loss:.06f}")
+            t_range.set_description(f"Epoch: {epoch:04d}, Loss: {loss:.06f}, FOV: {camera.forward():.03f}")
             t_range.refresh()
 
         # Adjust the learning rate.
@@ -208,6 +204,7 @@ def train(cfg):
 
             data_to_store = {
                 "model": model.state_dict(),
+                "camera": camera.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
             }
@@ -225,6 +222,7 @@ def train(cfg):
                     print(f"Rendering at pose {random_pose}.")
                     test_images = render_images(
                         model,
+                        camera,
                         translation = random_pose[0:3],
                         num_images=20,
                     )
@@ -234,9 +232,10 @@ def train(cfg):
                     print("Rendering Trajectory")
                     test_images = render_images_in_poses(
                         model,
+                        camera,
                         train_dataset,
-                        num_images=100,
-                        fix_heading = True
+                        num_images=10,
+                        fix_heading = False
                     )
 
                 imageio.mimsave(

@@ -54,7 +54,7 @@ def create_surround_cameras(radius, n_poses=20, up=(0.0, 1.0, 0.0), focal_length
     return cameras
 
 
-def render_images(model, translation, num_images, save=False, file_prefix=""):
+def render_images(model, camera, translation, num_images, save=False, file_prefix=""):
     # TODO: Make this work for both regular / fisheye cameras
     # (would be cool to see renders for both!)
     """
@@ -63,6 +63,7 @@ def render_images(model, translation, num_images, save=False, file_prefix=""):
     """
     all_images = []
     device = list(model.parameters())[0].device
+    camera_model = camera.model
 
 
     # Rotate around the origin of the camera. Aka, assign rotations to the input translation.
@@ -71,11 +72,11 @@ def render_images(model, translation, num_images, save=False, file_prefix=""):
         pose = np.array([*translation, *quat])
 
         pixel_coords, pixel_xys = get_pixels_from_image(
-            model.camera_model, filter_valid=True
+            camera_model, filter_valid=True
         )
 
         # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
-        ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=False)
+        ray_bundle = get_rays_from_pixels(pixel_coords, camera_model, model.X_ned_cam, pose, debug=False)
         
         ray_bundle.origins = ray_bundle.origins.to(dtype=torch.float32)
         ray_bundle.directions = ray_bundle.directions.to(dtype=torch.float32)
@@ -84,8 +85,8 @@ def render_images(model, translation, num_images, save=False, file_prefix=""):
         out = model(ray_bundle)
 
         # Return rendered features (colors)
-        image = np.zeros((model.camera_model.ss.W, model.camera_model.ss.H, 3))
-        image[model.camera_model.get_valid_mask() == 1, :] = out["feature"].cpu().detach().numpy()
+        image = np.zeros((camera_model.ss.W, camera_model.ss.H, 3))
+        image[camera_model.get_valid_mask() == 1, :] = out["feature"].cpu().detach().numpy()
         all_images.append(image)
 
         # Save
@@ -95,7 +96,7 @@ def render_images(model, translation, num_images, save=False, file_prefix=""):
     return all_images
 
 
-def render_images_in_poses(model, dataset, num_images = -1, save=False, file_prefix="", fix_heading=False):
+def render_images_in_poses(model, camera, dataset, num_images = -1, save=False, file_prefix="", fix_heading=False):
     # TODO: Make this work for both regular / fisheye cameras
     # (would be cool to see renders for both!)
     """
@@ -113,6 +114,7 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
         collate_fn=trivial_collate,
     )
     
+    fish_camera_model = camera.model
     pinhole_camera_model = Pinhole(128, 
                                128, 
                                128, 
@@ -140,18 +142,19 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
 
         # ------------------------- Render fisheye ------------------------- #
         pixel_coords, pixel_xys = get_pixels_from_image(
-            model.camera_model, filter_valid=True
+            fish_camera_model, filter_valid=True
         )
 
         # Render
-        ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=False)
+        ray_bundle = get_rays_from_pixels(pixel_coords, fish_camera_model, model.X_ned_cam, pose, debug=False)
  
         # Run model forward
         out = model(ray_bundle)
 
         # Return rendered features (colors)
-        image_fish = np.zeros((model.camera_model.ss.W, model.camera_model.ss.H, 3))
-        image_fish[model.camera_model.get_valid_mask() == 1, :] = out["feature"].cpu().detach().numpy()
+        mask = fish_camera_model.get_valid_mask().cpu()
+        image_fish = np.zeros((fish_camera_model.ss.W, fish_camera_model.ss.H, 3))
+        image_fish[mask == 1, :] = out["feature"].cpu().detach().numpy()
 
         # ------------------------- Render projective ------------------------- #        
         pixel_coords, pixel_xys = get_pixels_from_image(
