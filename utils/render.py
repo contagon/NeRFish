@@ -1,5 +1,4 @@
 import sys
-import cv2
 from scipy.spatial.transform import Rotation
 
 sys.path.append("../fish_nerf")
@@ -96,9 +95,7 @@ def render_images(model, camera, translation, num_images, save=False, file_prefi
     return all_images
 
 
-def render_images_in_poses(model, camera, dataset, num_images = -1, save=False, file_prefix="", fix_heading=False):
-    # TODO: Make this work for both regular / fisheye cameras
-    # (would be cool to see renders for both!)
+def render_images_in_poses(model, camera, pose_model, dataset, num_images = -1, save=False, file_prefix="", fix_heading=False):
     """
     Render a list of images from the given viewpoints.
 
@@ -134,7 +131,8 @@ def render_images_in_poses(model, camera, dataset, num_images = -1, save=False, 
             break
 
         # Get the batch contents.
-        image_gt, pose = batch[0]
+        idx, image_gt, pose_gt = batch[0]
+        pose = pose_model(idx)
 
         # Fix the heading, if required.
         if fix_heading:

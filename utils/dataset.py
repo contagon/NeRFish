@@ -1,10 +1,10 @@
 # General imports.
 import os
 import sys
-import cv2
 import numpy as np
 import torch
-from torchvision import transforms
+from torchvision import io
+from torchvision import transforms, io
 from colorama import Fore, Style
 from scipy.spatial.transform import Rotation
 
@@ -37,12 +37,6 @@ class TartanAirDataset(torch.utils.data.Dataset):
             self.poses_gt[i,:3, :3] = torch.tensor(Rotation.from_quat(pose[3:]).as_matrix())
 
 
-        self.transform = transforms.Compose(
-            [
-                transforms.ToTensor(),
-            ]
-        )
-
     def __len__(self):
         return self.num_frames
 
@@ -50,7 +44,10 @@ class TartanAirDataset(torch.utils.data.Dataset):
         # Get the image.
         img_path = os.path.join(self.traj_data_root, 'image_lcam_fish', '{:06d}.png'.format(idx))
         # print(Fore.GREEN + 'Loading image from {}'.format(os.path.abspath(img_path)) + Style.RESET_ALL)
-        img = self.transform(cv2.imread(img_path)).unsqueeze(0)
+        img = transforms.functional.convert_image_dtype(
+            io.read_image(img_path, io.ImageReadMode.RGB).unsqueeze(0),
+            torch.float32
+        )
 
         # Resize the image.
 
@@ -58,7 +55,7 @@ class TartanAirDataset(torch.utils.data.Dataset):
         # Get the pose.
         pose_gt = self.poses_gt[idx]
 
-        return img.to(self.device), pose_gt
+        return idx, img.to(self.device), pose_gt
 
 def get_dataset(traj_data_root, image_shape):
     '''
@@ -70,9 +67,6 @@ def get_dataset(traj_data_root, image_shape):
     return dataset, dataset
 
 
-
-
-# TODO: Dataset loading code
 def trivial_collate(batch):
     """
     A trivial collate function that merely returns the uncollated batch.

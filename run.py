@@ -9,7 +9,7 @@ import tqdm
 from omegaconf import DictConfig
 import matplotlib.pyplot as plt
 
-from fish_nerf.models import volume_dict, LinearSphereModel, Pose
+from fish_nerf.models import volume_dict, LinearSphereModel, PoseModel
 from fish_nerf.ray import (
     get_random_pixels_from_image,
     get_rays_from_pixels,
@@ -60,7 +60,7 @@ class Model(torch.nn.Module):
         return self.renderer(self.sampler, self.implicit_fn, ray_bundle)
 
 
-def create_model(cfg):
+def create_model(cfg, poses_est=None):
     # Create models
     model = Model(cfg)
     model.cuda()
@@ -69,6 +69,10 @@ def create_model(cfg):
     camera = LinearSphereModel(cfg.data.fov_degree, req_grad=cfg.training.train_intrinsics)
     camera.cuda()
     camera.train()
+
+    pose_model = PoseModel(poses_est.shape[0], cfg.training.train_R, cfg.training.train_t, poses_est)
+    pose_model.cuda()
+    pose_model.train()
 
     # Load checkpoints
     optimizer_state_dict = None
@@ -97,7 +101,7 @@ def create_model(cfg):
 
     # Initialize the optimizer.
     optimizer = torch.optim.Adam(
-        list(model.parameters()) + list(camera.parameters()),
+        list(model.parameters()) + list(camera.parameters()) + list(pose_model.parameters()),
         lr=cfg.training.lr,
     )
 
@@ -116,7 +120,7 @@ def create_model(cfg):
         optimizer, lr_lambda, last_epoch=start_epoch - 1, verbose=False
     )
 
-    return model, camera, optimizer, lr_scheduler, start_epoch, checkpoint_path
+    return model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path
 
 
 def train(cfg):
@@ -125,9 +129,6 @@ def train(cfg):
     # Image shape and size. Be convention,
     # the image shape is [H, W] and the image size is [W, H].
     image_size = [cfg.data.image_shape[1], cfg.data.image_shape[0]]
-
-    # Create model
-    model, camera, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg)
 
     # Load the training/validation data.
     train_dataset, val_dataset = get_dataset(
@@ -143,6 +144,11 @@ def train(cfg):
         collate_fn=trivial_collate,
     )
 
+    # Create model
+    # TODO Perturb poses
+    poses_est = train_dataset.poses_gt
+    model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg, poses_est)
+
     # Keep track of the camera poses (NED) seen so far (to sample from for validation).
     seen_camera_poses = set()
 
@@ -151,8 +157,9 @@ def train(cfg):
         t_range = tqdm.tqdm(enumerate(train_dataloader), total=len(train_dataloader))
 
         for iteration, batch in t_range:
-            image, pose = batch[0] # Batches are not collated, so `batch` is a list of samples. Take the first one only. NOTE(yoraish): This means that a batch size larger than 1 passed to the torch.utils.data.DataLoader will be a waste of work, and the first sample in the batch will be used (and incorreectly so, since we'll try to index into the tensor and things will probably break).
-            seen_camera_poses.add(tuple(pose))
+            idx, image, pose_gt = batch[0] # Batches are not collated, so `batch` is a list of samples. Take the first one only. NOTE(yoraish): This means that a batch size larger than 1 passed to the torch.utils.data.DataLoader will be a waste of work, and the first sample in the batch will be used (and incorreectly so, since we'll try to index into the tensor and things will probably break).
+            pose = pose_model(idx)
+            seen_camera_poses.add(idx)
 
             # Sample rays. The xy grid is of shape (2, N), where N is the number of rays. The first row is the x (column) coordinates, and the second row is the y (row) coordinates. By convention, the image origin is top left, and the x axis is to the right, and the y axis is down.
             pixel_coords, pixel_xys = get_random_pixels_from_image(
@@ -182,6 +189,7 @@ def train(cfg):
 
             # Calculate loss
             loss = torch.nn.functional.mse_loss(out["feature"], rgb_gt)
+            loss_pose = torch.linalg.inv(pose_gt)@pose
 
             # Take the training step.
             optimizer.zero_grad()
@@ -217,13 +225,13 @@ def train(cfg):
                 # We can rednder images in a given pose, outputting a list of images showing the camera rotating around its own axis.
                 # Choose a random camera pose.
                 if cfg.vis_style == "random_pose":
-                    random_pose = random.sample(list(seen_camera_poses), 1)[0]
-                    random_pose = np.array(random_pose)
+                    idx = random.sample(seen_camera_poses, 1)[0]
+                    random_pose = pose_model(idx)
                     print(f"Rendering at pose {random_pose}.")
                     test_images = render_images(
                         model,
                         camera,
-                        translation = random_pose[0:3],
+                        translation = random_pose[:3,3],
                         num_images=20,
                     )
                 
@@ -233,6 +241,7 @@ def train(cfg):
                     test_images = render_images_in_poses(
                         model,
                         camera,
+                        pose_model,
                         train_dataset,
                         num_images=10,
                         fix_heading = False

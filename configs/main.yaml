@@ -17,12 +17,16 @@ training:
   render_interval: 50
 
   train_intrinsics: True
+  train_R: False
+  train_t: False
 
 data:
   image_shape: [256, 256]
   fov_degree: 160
   # fov_degree: 195
   traj_data_root: tartanair/Sewerage/Data_hard/P001
+  var_R: 0.1
+  var_t: 0.1
 
 renderer:
   type: volume

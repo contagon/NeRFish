@@ -183,7 +183,7 @@ class NeuralRadianceField(nn.Module):
 
 
 # https://github.com/ActiveVisionLab/nerfmm/blob/main/models/poses.py
-class Pose(nn.Module):
+class PoseModel(nn.Module):
     def __init__(self, num_cams, learn_R, learn_t, init_c2w=None):
         """
         :param num_cams:
@@ -191,7 +191,7 @@ class Pose(nn.Module):
         :param learn_t:  True/False
         :param init_c2w: (N, 4, 4) torch tensor
         """
-        super(Pose, self).__init__()
+        super(PoseModel, self).__init__()
         self.num_cams = num_cams
         self.init_c2w = None
         if init_c2w is not None:
@@ -212,7 +212,7 @@ class Pose(nn.Module):
         # learn a delta pose between init pose and target pose,
         # if a init pose is provided
         if self.init_c2w is not None:
-            c2w = c2w @ self.init_c2w[cam_id]
+            c2w = self.init_c2w[cam_id] @ c2w
 
         return c2w
 
@@ -222,7 +222,7 @@ class LinearSphereModel(nn.Module):
 
         super(LinearSphereModel, self).__init__()
         
-        self.fov = fov_degree
+        self.fov = nn.Parameter(torch.tensor(fov_degree), requires_grad=False)
         self.delta = nn.Parameter(
             torch.tensor(1.0, dtype=torch.float32), requires_grad=req_grad
         )  # (1, )
