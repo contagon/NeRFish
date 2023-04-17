@@ -5,8 +5,6 @@ sys.path.append("../fish_nerf")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
-from pytorch3d.renderer import PerspectiveCameras  # noqa: E402
-from pytorch3d.renderer import look_at_view_transform  # noqa: E402
 
 from fish_nerf.ray import get_pixels_from_image  # noqa: E402
 from fish_nerf.ray import get_rays_from_pixels  # noqa: E402
@@ -15,45 +13,8 @@ from image_resampling.mvs_utils.camera_models import ShapeStruct, Pinhole
 
 import tqdm
 
-def create_surround_cameras(radius, n_poses=20, up=(0.0, 1.0, 0.0), focal_length=1.0):
-    """
-    Spiral cameras looking at the origin
-    """
-    cameras = []
 
-    for theta in np.linspace(0, 2 * np.pi, n_poses + 1)[:-1]:
-        if np.abs(up[1]) > 0:
-            eye = [
-                np.cos(theta + np.pi / 2) * radius,
-                0,
-                -np.sin(theta + np.pi / 2) * radius,
-            ]
-        else:
-            eye = [
-                np.cos(theta + np.pi / 2) * radius,
-                np.sin(theta + np.pi / 2) * radius,
-                2.0,
-            ]
-
-        R, T = look_at_view_transform(
-            eye=(eye,),
-            at=([0.0, 0.0, 0.0],),
-            up=(up,),
-        )
-
-        cameras.append(
-            PerspectiveCameras(
-                focal_length=torch.tensor([focal_length])[None],
-                principal_point=torch.tensor([0.0, 0.0])[None],
-                R=R,
-                T=T,
-            )
-        )
-
-    return cameras
-
-
-def render_images(model, camera, translation, num_images, save=False, file_prefix=""):
+def render_images(model, camera, translation, num_images):
     # TODO: Make this work for both regular / fisheye cameras
     # (would be cool to see renders for both!)
     """
@@ -88,14 +49,10 @@ def render_images(model, camera, translation, num_images, save=False, file_prefi
         image[camera_model.get_valid_mask() == 1, :] = out["feature"].cpu().detach().numpy()
         all_images.append(image)
 
-        # Save
-        if save:
-            plt.imsave(f"{file_prefix}_{theta}.png", image)
-
     return all_images
 
 
-def render_images_in_poses(model, camera, pose_model, dataset, num_images = -1, save=False, file_prefix="", fix_heading=False):
+def render_images_in_poses(model, camera, pose_model, dataset, num_images = -1, save_traj=True, fix_heading=False):
     """
     Render a list of images from the given viewpoints.
 
@@ -125,6 +82,7 @@ def render_images_in_poses(model, camera, pose_model, dataset, num_images = -1, 
     t_range = tqdm.tqdm(enumerate(dataloader), total=num_images)
 
     # Rotate around the origin of the camera. Aka, assign rotations to the input translation.
+    pose_est = torch.zeros((num_images,4,4))
     for iter, batch in t_range:
 
         if num_images > 0 and iter >= num_images:
@@ -173,9 +131,17 @@ def render_images_in_poses(model, camera, pose_model, dataset, num_images = -1, 
         image = np.concatenate((image_gt_viewed, image_fish, image_proj), axis=1)
 
         all_images.append(image)
+        pose_est[iter] = pose
 
-        # Save
-        if save:
-            plt.imsave(f"{file_prefix}_traj.png", image)
 
-    return all_images
+    # ------------------------- Save trajectory as well ------------------------- #
+    if save_traj:
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        ax.plot(pose_est[:,0,3], pose_est[:,1,3], marker='o')
+        ax.plot(dataset.poses_gt[:num_images,0,3].cpu(), dataset.poses_gt[:num_images,1,3].cpu(), marker='o')
+    else:
+        fig = None
+
+
+    return all_images, fig

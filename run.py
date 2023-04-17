@@ -9,6 +9,7 @@ import tqdm
 from omegaconf import DictConfig
 import matplotlib.pyplot as plt
 
+import pypose as pp
 from fish_nerf.models import volume_dict, LinearSphereModel, PoseModel
 from fish_nerf.ray import (
     get_random_pixels_from_image,
@@ -20,7 +21,7 @@ from fish_nerf.sampler import sampler_dict
 from image_resampling.mvs_utils.camera_models import LinearSphere
 from image_resampling.mvs_utils.shape_struct import ShapeStruct
 from utils.dataset import get_dataset, trivial_collate
-from utils.render import create_surround_cameras, render_images, render_images_in_poses
+from utils.render import render_images, render_images_in_poses
 
 np.set_printoptions(suppress=True, precision=3)
 
@@ -94,6 +95,7 @@ def create_model(cfg, poses_est=None):
 
             model.load_state_dict(loaded_data["model"])
             camera.load_state_dict(loaded_data["camera"])
+            pose_model.load_state_dict(loaded_data["pose"])
             start_epoch = loaded_data["epoch"]
 
             print(f"   => resuming from epoch {start_epoch}.")
@@ -145,8 +147,10 @@ def train(cfg):
     )
 
     # Create model
-    # TODO Perturb poses
-    poses_est = train_dataset.poses_gt
+    var_t = cfg.data.var_t if cfg.training.train_t else 0
+    var_R = cfg.data.var_R if cfg.training.train_R else 0
+    noise = pp.randn_SE3(train_dataset.num_frames, sigma=[var_t, var_R]).matrix().cuda()
+    poses_est = train_dataset.poses_gt@noise
     model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg, poses_est)
 
     # Keep track of the camera poses (NED) seen so far (to sample from for validation).
@@ -189,14 +193,15 @@ def train(cfg):
 
             # Calculate loss
             loss = torch.nn.functional.mse_loss(out["feature"], rgb_gt)
-            loss_pose = torch.linalg.inv(pose_gt)@pose
+            pose_error = torch.linalg.inv(pose_gt)@pose
+            pose_error = pp.Log(pp.from_matrix(pose_error, pp.SE3_type)).norm()
 
             # Take the training step.
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            t_range.set_description(f"Epoch: {epoch:04d}, Loss: {loss:.06f}, FOV: {camera.forward():.03f}")
+            t_range.set_description(f"Epoch: {epoch:04d}, Loss: {loss:.06f}, FOV: {camera.forward():.03f}, Pose: {pose_error:.04f}")
             t_range.refresh()
 
         # Adjust the learning rate.
@@ -213,6 +218,7 @@ def train(cfg):
             data_to_store = {
                 "model": model.state_dict(),
                 "camera": camera.state_dict(),
+                "pose": pose_model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
             }
@@ -238,7 +244,7 @@ def train(cfg):
                 # We can also use a torch dataset to render images. The poses from the dataset are used as input to the model and the output is rendered, concaternated with the ground truth image, and returned. Note that we can also optionally fix the heading of the camera to xyzw = 0001.
                 if cfg.vis_style == "trajectory":
                     print("Rendering Trajectory")
-                    test_images = render_images_in_poses(
+                    test_images, fig = render_images_in_poses(
                         model,
                         camera,
                         pose_model,
@@ -246,6 +252,8 @@ def train(cfg):
                         num_images=10,
                         fix_heading = False
                     )
+                    fig.savefig(f'results/training_{epoch}_traj.png')
+                    fig.clf()
 
                 imageio.mimsave(
                     f"results/training_{epoch}.gif",
@@ -253,6 +261,7 @@ def train(cfg):
                 )
 
 
+# TODO: Clean this up so we can render w/o training
 def render(
     cfg,
 ):
@@ -261,8 +270,8 @@ def render(
     model = model.cuda()
     model.eval()
 
-    # Render spiral
-    cameras = create_surround_cameras(3.0, n_poses=20)
+#     # Render spiral
+#     cameras = create_surround_cameras(3.0, n_poses=20)
     all_images = render_images(model, cameras, cfg.data.image_shape)
     imageio.mimsave("results/3d_revolve.gif", [np.uint8(im * 255) for im in all_images])
 
