@@ -7,8 +7,6 @@ import numpy as np
 import torch
 import tqdm
 from omegaconf import DictConfig
-import sys
-from torchvision import transforms
 import matplotlib.pyplot as plt
 
 from fish_nerf.models import volume_dict
@@ -147,13 +145,6 @@ def train(cfg):
         collate_fn=trivial_collate,
     )
 
-    # Transform numpy arrays to torch tensors. Addressing the shape and type of the tensors.
-    image_transform = transforms.Compose(
-        [
-            transforms.ToTensor(),
-        ]
-    )
-
     # Keep track of the camera poses (NED) seen so far (to sample from for validation).
     seen_camera_poses = set()
 
@@ -164,10 +155,6 @@ def train(cfg):
         for iteration, batch in t_range:
             image, pose = batch[0] # Batches are not collated, so `batch` is a list of samples. Take the first one only. NOTE(yoraish): This means that a batch size larger than 1 passed to the torch.utils.data.DataLoader will be a waste of work, and the first sample in the batch will be used (and incorreectly so, since we'll try to index into the tensor and things will probably break).
             seen_camera_poses.add(tuple(pose))
-
-            # Transform image to tensor.
-            image = image_transform(image)
-            image = image.cuda().unsqueeze(0)
 
             # Sample rays. The xy grid is of shape (2, N), where N is the number of rays. The first row is the x (column) coordinates, and the second row is the y (row) coordinates. By convention, the image origin is top left, and the x axis is to the right, and the y axis is down.
             pixel_coords, pixel_xys = get_random_pixels_from_image(
@@ -190,11 +177,7 @@ def train(cfg):
             ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=cfg.debug)
           
             # Sample the image at the sampled pixels. rgb_gt is of shape (N, 3), where N is the number of rays.
-            # rgb_gt = sample_images_at_xy(image, xy_grid)
             rgb_gt = image[:, :, pixel_coords[1, :].long(), pixel_coords[0, :].long()].squeeze(0).transpose(0, 1)
-
-            ray_bundle.origins = ray_bundle.origins.to(dtype=torch.float32)
-            ray_bundle.directions = ray_bundle.directions.to(dtype=torch.float32)
 
             # Run model forward
             out = model(ray_bundle)
@@ -232,13 +215,10 @@ def train(cfg):
         # Render
         if epoch % cfg.training.render_interval == 0 and epoch > 0:
             with torch.no_grad():
-
-
-
                 # We can rednder images in a given pose, outputting a list of images showing the camera rotating around its own axis.
                 # Choose a random camera pose.
                 if cfg.vis_style == "random_pose":
-                    random_pose = random.sample(seen_camera_poses, 1)[0]
+                    random_pose = random.sample(list(seen_camera_poses), 1)[0]
                     random_pose = np.array(random_pose)
                     print(f"Rendering at pose {random_pose}.")
                     test_images = render_images(
@@ -249,6 +229,7 @@ def train(cfg):
                 
                 # We can also use a torch dataset to render images. The poses from the dataset are used as input to the model and the output is rendered, concaternated with the ground truth image, and returned. Note that we can also optionally fix the heading of the camera to xyzw = 0001.
                 if cfg.vis_style == "trajectory":
+                    print("Rendering Trajectory")
                     test_images = render_images_in_poses(
                         model,
                         train_dataset,

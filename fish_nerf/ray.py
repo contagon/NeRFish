@@ -1,6 +1,5 @@
 import torch
 import torch.nn.functional as F
-from scipy.spatial.transform import Rotation
 
 # Convenience class wrapping several ray inputs:
 #   1) Origins -- ray origins
@@ -113,8 +112,8 @@ def get_pixels_from_image(camera, valid_mask, filter_valid=True):
         valid_pixel_coords = pixel_coords
         valid_xy_coords = xy_coords
 
-    valid_pixel_coords = valid_pixel_coords.view(2, -1)
-    valid_xy_coords = valid_xy_coords.view(2, -1)
+    valid_pixel_coords = valid_pixel_coords.view(2, -1).cuda()
+    valid_xy_coords = valid_xy_coords.view(2, -1).cuda()
 
     return valid_pixel_coords, valid_xy_coords
 
@@ -177,16 +176,14 @@ def get_rays_from_pixels(pixel_coords, camera, X_ned_cam, camera_pose_ned, debug
     X_ned_cam = X_ned_cam.to(x_cam_rays.device)
     x_base_rays = X_ned_cam @ x_cam_rays
     x_base_rays = x_base_rays.to(device=x_cam_rays.device)
-    
+       
     # Get ray origins from camera center.
-    rays_o = torch.tensor(camera_pose_ned[:3]).to(device=x_base_rays.device)
+    rays_o = camera_pose_ned[:3,3]
     rays_o = rays_o.repeat(x_base_rays.shape[1], 1)
 
     # Rotate the rays by the base rotation, which would yield their directions in the world frame (yes it is still NED). 
     # First, convert the pose to a transformation matrix.
-    X_world_base = torch.eye(4).to(device=x_base_rays.device)
-    X_world_base[:3, 3] = torch.tensor(camera_pose_ned[:3])
-    X_world_base[:3, :3] = torch.tensor(Rotation.from_quat(camera_pose_ned[3:]).as_matrix()).to(device=x_base_rays.device)
+    X_world_base = camera_pose_ned
     R_world_base = X_world_base[:3, :3]
     rays_d = R_world_base @ x_base_rays[:3]
     rays_d = rays_d.T.contiguous()
@@ -230,7 +227,6 @@ def get_rays_from_pixels(pixel_coords, camera, X_ned_cam, camera_pose_ned, debug
         ax.quiver(0, 0, 0, 0, 0, 1, color='b', arrow_length_ratio=0.1, pivot='tail', linewidth=5)
         ax.title.set_text('Rays in the world frame (NED). For illustration purposes only, the world origin coincides in translation with the base origin.')
         plt.show()
-
 
     # Create and return RayBundle
     return RayBundle(

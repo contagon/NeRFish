@@ -101,10 +101,6 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
 
     """
     all_images = []
-    device = list(model.parameters())[0].device
-
-    # Sort poses by x, y, z.
-    poses = []
 
     # A dataloader for the images and poses.
     dataloader = torch.utils.data.DataLoader(
@@ -126,8 +122,7 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
 
         # Fix the heading, if required.
         if fix_heading:
-            pose[3:] = 0
-            pose[-1] = 1
+            pose[:3,:3] = torch.eye(3)
 
         pixel_coords, pixel_xys = get_pixels_from_image(
             model.camera_model, valid_mask=model.valid_mask, filter_valid=True
@@ -135,10 +130,7 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
 
         # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
         ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=False)
-        
-        ray_bundle.origins = ray_bundle.origins.to(dtype=torch.float32)
-        ray_bundle.directions = ray_bundle.directions.to(dtype=torch.float32)
-
+ 
         # Run model forward
         out = model(ray_bundle)
 
@@ -147,8 +139,8 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
         image[model.valid_mask == 1, :] = out["feature"].cpu().detach().numpy()
 
         # Concatenate the original images and the rendered images.
-        image = np.concatenate((image_gt/255.0, image), axis=1)
-
+        image_gt_viewed = image_gt.squeeze().permute(1,2,0).cpu()
+        image = np.concatenate((image_gt_viewed, image), axis=1)
 
         all_images.append(image)
 
