@@ -14,6 +14,7 @@ from fish_nerf.ray import get_rays_from_pixels  # noqa: E402
 from .dataset import trivial_collate
 from image_resampling.mvs_utils.camera_models import ShapeStruct, Pinhole
 
+import tqdm
 
 def create_surround_cameras(radius, n_poses=20, up=(0.0, 1.0, 0.0), focal_length=1.0):
     """
@@ -70,7 +71,7 @@ def render_images(model, translation, num_images, save=False, file_prefix=""):
         pose = np.array([*translation, *quat])
 
         pixel_coords, pixel_xys = get_pixels_from_image(
-            model.camera_model, valid_mask=model.valid_mask, filter_valid=True
+            model.camera_model, filter_valid=True
         )
 
         # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
@@ -84,7 +85,7 @@ def render_images(model, translation, num_images, save=False, file_prefix=""):
 
         # Return rendered features (colors)
         image = np.zeros((model.camera_model.ss.W, model.camera_model.ss.H, 3))
-        image[model.valid_mask == 1, :] = out["feature"].cpu().detach().numpy()
+        image[model.camera_model.get_valid_mask() == 1, :] = out["feature"].cpu().detach().numpy()
         all_images.append(image)
 
         # Save
@@ -112,8 +113,8 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
         collate_fn=trivial_collate,
     )
     
-    pinhole_camera_model = Pinhole(256, 
-                               256, 
+    pinhole_camera_model = Pinhole(128, 
+                               128, 
                                128, 
                                128, 
                                ShapeStruct(256,256),
@@ -121,8 +122,11 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
                             out_to_numpy=False)
     pinhole_camera_model.device = 'cuda'
 
+    num_images = num_images if num_images != -1 else len(dataloader)
+    t_range = tqdm.tqdm(enumerate(dataloader), total=num_images)
+
     # Rotate around the origin of the camera. Aka, assign rotations to the input translation.
-    for iter, batch in enumerate(dataloader):
+    for iter, batch in t_range:
 
         if num_images > 0 and iter >= num_images:
             break
@@ -136,7 +140,7 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
 
         # ------------------------- Render fisheye ------------------------- #
         pixel_coords, pixel_xys = get_pixels_from_image(
-            model.camera_model, valid_mask=model.valid_mask, filter_valid=True
+            model.camera_model, filter_valid=True
         )
 
         # Render
@@ -147,12 +151,11 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
 
         # Return rendered features (colors)
         image_fish = np.zeros((model.camera_model.ss.W, model.camera_model.ss.H, 3))
-        image_fish[model.valid_mask == 1, :] = out["feature"].cpu().detach().numpy()
+        image_fish[model.camera_model.get_valid_mask() == 1, :] = out["feature"].cpu().detach().numpy()
 
         # ------------------------- Render projective ------------------------- #        
-        mask = np.full((256,256), True)
         pixel_coords, pixel_xys = get_pixels_from_image(
-            pinhole_camera_model, valid_mask=mask, filter_valid=True
+            pinhole_camera_model, filter_valid=True
         )
 
         # Render

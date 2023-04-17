@@ -124,6 +124,8 @@ def create_model(cfg):
 
 
 def train(cfg):
+    torch.manual_seed(cfg.seed)
+
     # Image shape and size. Be convention,
     # the image shape is [H, W] and the image size is [W, H].
     image_size = [cfg.data.image_shape[1], cfg.data.image_shape[0]]
@@ -150,7 +152,7 @@ def train(cfg):
 
     # Run the main training loop.
     for epoch in range(start_epoch, cfg.training.num_epochs):
-        t_range = tqdm.tqdm(enumerate(train_dataloader))
+        t_range = tqdm.tqdm(enumerate(train_dataloader), total=len(train_dataloader))
 
         for iteration, batch in t_range:
             image, pose = batch[0] # Batches are not collated, so `batch` is a list of samples. Take the first one only. NOTE(yoraish): This means that a batch size larger than 1 passed to the torch.utils.data.DataLoader will be a waste of work, and the first sample in the batch will be used (and incorreectly so, since we'll try to index into the tensor and things will probably break).
@@ -158,12 +160,12 @@ def train(cfg):
 
             # Sample rays. The xy grid is of shape (2, N), where N is the number of rays. The first row is the x (column) coordinates, and the second row is the y (row) coordinates. By convention, the image origin is top left, and the x axis is to the right, and the y axis is down.
             pixel_coords, pixel_xys = get_random_pixels_from_image(
-                cfg.training.batch_size, image_size, model.camera_model, valid_mask=model.valid_mask
+                cfg.training.batch_size, image_size, model.camera_model
             )
 
             if cfg.debug:
                 # Show the valid mask.
-                image_np = model.valid_mask.cpu().numpy()
+                image_np = model.camera_model.get_valid_mask().cpu().numpy()
                 plt.imshow(image_np)
                 plt.show()
 

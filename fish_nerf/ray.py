@@ -81,7 +81,7 @@ def sample_images_at_xy(
 
 
 # Generate pixel coordinates from in NDC space (from [-1, 1])
-def get_pixels_from_image(camera, valid_mask, filter_valid=True):
+def get_pixels_from_image(camera, filter_valid=True):
     # W, H = image_size[0], image_size[1]
 
     # # Generate pixel coordinates from [0, W] in x and [0, H] in y
@@ -97,6 +97,7 @@ def get_pixels_from_image(camera, valid_mask, filter_valid=True):
     # ).view(W * H, 2)
 
     # return -xy_grid
+    valid_mask = camera.get_valid_mask()
 
     pixel_coords = camera.pixel_coordinates(shift=0, normalized=False, flatten=False)
     pixel_coords =  pixel_coords.to(dtype=torch.uint8)
@@ -120,7 +121,7 @@ def get_pixels_from_image(camera, valid_mask, filter_valid=True):
 
 
 # Random subsampling of pixels from an image
-def get_random_pixels_from_image(n_pixels, image_size, camera, valid_mask):
+def get_random_pixels_from_image(n_pixels, image_size, camera):
     # xy_grid = get_pixels_from_image(image_size, camera)
 
     # # Random subsampling of pixel coordinates
@@ -129,6 +130,7 @@ def get_random_pixels_from_image(n_pixels, image_size, camera, valid_mask):
 
     # # Return
     # return xy_grid_sub.reshape(-1, 2)[:n_pixels]
+    valid_mask = camera.get_valid_mask()
 
     # Tensor of pixels coordinates (x, y), of shape (2, W, H). Shape: (2, W*H). This is where we can randomly choose pixels to create NeRF training batches.
     pixel_coords = camera.pixel_coordinates(shift=0, normalized=False, flatten=False)
