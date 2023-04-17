@@ -12,6 +12,7 @@ from pytorch3d.renderer import look_at_view_transform  # noqa: E402
 from fish_nerf.ray import get_pixels_from_image  # noqa: E402
 from fish_nerf.ray import get_rays_from_pixels  # noqa: E402
 from .dataset import trivial_collate
+from image_resampling.mvs_utils.camera_models import ShapeStruct, Pinhole
 
 
 def create_surround_cameras(radius, n_poses=20, up=(0.0, 1.0, 0.0), focal_length=1.0):
@@ -110,6 +111,15 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
         num_workers=0,
         collate_fn=trivial_collate,
     )
+    
+    pinhole_camera_model = Pinhole(256, 
+                               256, 
+                               128, 
+                               128, 
+                               ShapeStruct(256,256),
+                            in_to_tensor=False, 
+                            out_to_numpy=False)
+    pinhole_camera_model.device = 'cuda'
 
     # Rotate around the origin of the camera. Aka, assign rotations to the input translation.
     for iter, batch in enumerate(dataloader):
@@ -124,23 +134,39 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
         if fix_heading:
             pose[:3,:3] = torch.eye(3)
 
+        # ------------------------- Render fisheye ------------------------- #
         pixel_coords, pixel_xys = get_pixels_from_image(
             model.camera_model, valid_mask=model.valid_mask, filter_valid=True
         )
 
-        # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
+        # Render
         ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=False)
  
         # Run model forward
         out = model(ray_bundle)
 
         # Return rendered features (colors)
-        image = np.zeros((model.camera_model.ss.W, model.camera_model.ss.H, 3))
-        image[model.valid_mask == 1, :] = out["feature"].cpu().detach().numpy()
+        image_fish = np.zeros((model.camera_model.ss.W, model.camera_model.ss.H, 3))
+        image_fish[model.valid_mask == 1, :] = out["feature"].cpu().detach().numpy()
 
+        # ------------------------- Render projective ------------------------- #        
+        mask = np.full((256,256), True)
+        pixel_coords, pixel_xys = get_pixels_from_image(
+            pinhole_camera_model, valid_mask=mask, filter_valid=True
+        )
+
+        # Render
+        ray_bundle = get_rays_from_pixels(pixel_coords, pinhole_camera_model, model.X_ned_cam, pose, debug=False)
+ 
+        # Run model forward
+        out = model(ray_bundle)
+
+        image_proj = out["feature"].view(256,256,3).detach().cpu().numpy()
+
+        # ------------------------- Save & Return ------------------------- #
         # Concatenate the original images and the rendered images.
         image_gt_viewed = image_gt.squeeze().permute(1,2,0).cpu()
-        image = np.concatenate((image_gt_viewed, image), axis=1)
+        image = np.concatenate((image_gt_viewed, image_fish, image_proj), axis=1)
 
         all_images.append(image)
 

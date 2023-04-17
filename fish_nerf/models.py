@@ -5,6 +5,9 @@ import torch.nn.functional as F
 from fish_nerf.ray import RayBundle
 from utils.lie_groups import make_c2w
 
+from image_resampling.mvs_utils.camera_models import LinearSphere
+from image_resampling.mvs_utils.shape_struct import ShapeStruct
+
 # ------------------------- Helper Modules ------------------------- #
 
 
@@ -214,18 +217,28 @@ class Pose(nn.Module):
         return c2w
 
 
-class LinearSphereParams(nn.Module):
+class LinearSphereModel(nn.Module):
     def __init__(self, fov_degree, req_grad):
-        super(LinearSphereParams, self).__init__()
+
+        super(LinearSphereModel, self).__init__()
+        
         self.fov = fov_degree
         self.delta = nn.Parameter(
             torch.tensor(1.0, dtype=torch.float32), requires_grad=req_grad
         )  # (1, )
 
+
     def forward(self):
         # TODO: Should we optimize over a scale or an additive delta?
         return self.fov + self.delta
 
+    @property
+    def model(self):
+        return LinearSphere(
+            fov_degree = self.forward(), 
+            shape_struct = ShapeStruct(256, 256),
+            in_to_tensor=False, 
+            out_to_numpy=False)
 
 volume_dict = {
     "nerf": NeuralRadianceField,
