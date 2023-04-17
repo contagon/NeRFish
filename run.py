@@ -1,12 +1,15 @@
 # General imports.
 import os
-
+import random
 import hydra
 import imageio
 import numpy as np
 import torch
 import tqdm
 from omegaconf import DictConfig
+import sys
+from torchvision import transforms
+import matplotlib.pyplot as plt
 
 from fish_nerf.models import volume_dict
 from fish_nerf.ray import (
@@ -19,16 +22,9 @@ from fish_nerf.sampler import sampler_dict
 from image_resampling.mvs_utils.camera_models import LinearSphere
 from image_resampling.mvs_utils.shape_struct import ShapeStruct
 from utils.dataset import get_dataset, trivial_collate
-from utils.render import create_surround_cameras, render_images
+from utils.render import create_surround_cameras, render_images, render_images_in_poses
 
 np.set_printoptions(suppress=True, precision=3)
-
-# Some geometry that we need for conversions.
-R_ned_cam = (
-    torch.tensor([[0, 0, 1, 0], [1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1]])
-    .view(4, 4)
-    .float()
-)
 
 
 # Model class containing:
@@ -42,12 +38,20 @@ class Model(torch.nn.Module):
         super().__init__()
 
         # Create the camera model. These are the intrinsics. of the dataset.
-        LinearSphere(
-            fov_degree=cfg.fov_degree,
-            shape_struct=ShapeStruct(256, 256),
-            in_to_tensor=False,
-            out_to_numpy=False,
-        )
+        self.camera_model = LinearSphere(
+                    fov_degree = cfg.data.fov_degree, 
+                    shape_struct = ShapeStruct(256, 256),
+                    in_to_tensor=False, 
+                    out_to_numpy=False)
+        
+        self.valid_mask = self.camera_model.get_valid_mask()
+
+
+        # Some geometry that we need for conversions.
+        self.X_ned_cam = torch.tensor([[0, 0, 1, 0],
+                                    [1, 0, 0, 0],
+                                    [0, 1, 0, 0],
+                                    [0, 0, 0, 1]]).view(4, 4).float()
 
         # Get implicit function from config
         self.implicit_fn = volume_dict[cfg.implicit_function.type](
@@ -143,29 +147,54 @@ def train(cfg):
         collate_fn=trivial_collate,
     )
 
+    # Transform numpy arrays to torch tensors. Addressing the shape and type of the tensors.
+    image_transform = transforms.Compose(
+        [
+            transforms.ToTensor(),
+        ]
+    )
+
+    # Keep track of the camera poses (NED) seen so far (to sample from for validation).
+    seen_camera_poses = set()
+
     # Run the main training loop.
     for epoch in range(start_epoch, cfg.training.num_epochs):
         t_range = tqdm.tqdm(enumerate(train_dataloader))
 
         for iteration, batch in t_range:
-            # Batches are not collated, so `batch` is a list of samples.
-            # Take the first one only. NOTE(yoraish): This means that a batch size
-            # larger than 1 passed to the torch.utils.data.DataLoader will be a
-            # waste of work, and the first sample in the batch will be used
-            # (and incorreectly so, since we'll try to index into the tensor and
-            # things will probably break).
-            image, pose = batch[0]
-            image = image.cuda().unsqueeze(0)
-            # TODO Setup camera
-            camera = None
-            camera = camera.cuda()
+            image, pose = batch[0] # Batches are not collated, so `batch` is a list of samples. Take the first one only. NOTE(yoraish): This means that a batch size larger than 1 passed to the torch.utils.data.DataLoader will be a waste of work, and the first sample in the batch will be used (and incorreectly so, since we'll try to index into the tensor and things will probably break).
+            seen_camera_poses.add(tuple(pose))
 
-            # Sample rays
-            xy_grid = get_random_pixels_from_image(
-                cfg.training.batch_size, image_size, camera
+            # Transform image to tensor.
+            image = image_transform(image)
+            image = image.cuda().unsqueeze(0)
+
+            # Sample rays. The xy grid is of shape (2, N), where N is the number of rays. The first row is the x (column) coordinates, and the second row is the y (row) coordinates. By convention, the image origin is top left, and the x axis is to the right, and the y axis is down.
+            pixel_coords, pixel_xys = get_random_pixels_from_image(
+                cfg.training.batch_size, image_size, model.camera_model, valid_mask=model.valid_mask
             )
-            ray_bundle = get_rays_from_pixels(xy_grid, image_size, camera)
-            rgb_gt = sample_images_at_xy(image, xy_grid)
+
+            if cfg.debug:
+                # Show the valid mask.
+                image_np = model.valid_mask.cpu().numpy()
+                plt.imshow(image_np)
+                plt.show()
+
+                # Show the sampled pixels.
+                image_np = image.squeeze(0).cpu().numpy().transpose(1, 2, 0) * 0
+                image_np[pixel_coords.cpu()[1, :], pixel_coords.cpu()[0, :]] = 1
+                plt.imshow(image_np)
+                plt.show()
+
+            # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
+            ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=cfg.debug)
+          
+            # Sample the image at the sampled pixels. rgb_gt is of shape (N, 3), where N is the number of rays.
+            # rgb_gt = sample_images_at_xy(image, xy_grid)
+            rgb_gt = image[:, :, pixel_coords[1, :].long(), pixel_coords[0, :].long()].squeeze(0).transpose(0, 1)
+
+            ray_bundle.origins = ray_bundle.origins.to(dtype=torch.float32)
+            ray_bundle.directions = ray_bundle.directions.to(dtype=torch.float32)
 
             # Run model forward
             out = model(ray_bundle)
@@ -203,14 +232,30 @@ def train(cfg):
         # Render
         if epoch % cfg.training.render_interval == 0 and epoch > 0:
             with torch.no_grad():
-                test_images = render_images(
-                    model,
-                    create_surround_cameras(
-                        4.0, n_poses=20, up=(0.0, 0.0, 1.0), focal_length=2.0
-                    ),
-                    image_size,
-                    file_prefix="nerf",
-                )
+
+
+
+                # We can rednder images in a given pose, outputting a list of images showing the camera rotating around its own axis.
+                # Choose a random camera pose.
+                if cfg.vis_style == "random_pose":
+                    random_pose = random.sample(seen_camera_poses, 1)[0]
+                    random_pose = np.array(random_pose)
+                    print(f"Rendering at pose {random_pose}.")
+                    test_images = render_images(
+                        model,
+                        translation = random_pose[0:3],
+                        num_images=20,
+                    )
+                
+                # We can also use a torch dataset to render images. The poses from the dataset are used as input to the model and the output is rendered, concaternated with the ground truth image, and returned. Note that we can also optionally fix the heading of the camera to xyzw = 0001.
+                if cfg.vis_style == "trajectory":
+                    test_images = render_images_in_poses(
+                        model,
+                        train_dataset,
+                        num_images=100,
+                        fix_heading = True
+                    )
+
                 imageio.mimsave(
                     f"results/training_{epoch}.gif",
                     [np.uint8(im * 255) for im in test_images],

@@ -1,4 +1,6 @@
 import sys
+import cv2
+from scipy.spatial.transform import Rotation
 
 sys.path.append("../fish_nerf")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -9,6 +11,7 @@ from pytorch3d.renderer import look_at_view_transform  # noqa: E402
 
 from fish_nerf.ray import get_pixels_from_image  # noqa: E402
 from fish_nerf.ray import get_rays_from_pixels  # noqa: E402
+from .dataset import trivial_collate
 
 
 def create_surround_cameras(radius, n_poses=20, up=(0.0, 1.0, 0.0), focal_length=1.0):
@@ -49,7 +52,7 @@ def create_surround_cameras(radius, n_poses=20, up=(0.0, 1.0, 0.0), focal_length
     return cameras
 
 
-def render_images(model, cameras, image_size, save=False, file_prefix=""):
+def render_images(model, translation, num_images, save=False, file_prefix=""):
     # TODO: Make this work for both regular / fisheye cameras
     # (would be cool to see renders for both!)
     """
@@ -59,30 +62,98 @@ def render_images(model, cameras, image_size, save=False, file_prefix=""):
     all_images = []
     device = list(model.parameters())[0].device
 
-    for cam_idx, camera in enumerate(cameras):
-        print(f"Rendering image {cam_idx}")
 
-        torch.cuda.empty_cache()
-        camera = camera.to(device)
-        xy_grid = get_pixels_from_image(image_size, camera)
-        ray_bundle = get_rays_from_pixels(xy_grid, image_size, camera)
+    # Rotate around the origin of the camera. Aka, assign rotations to the input translation.
+    for theta_ix, theta in enumerate(np.linspace(0, 2 * np.pi, num_images + 1)[:-1]):
+        quat = Rotation.from_euler('z', theta, degrees=False).as_quat()
+        pose = np.array([*translation, *quat])
 
-        # Implement rendering in renderer.py
+        pixel_coords, pixel_xys = get_pixels_from_image(
+            model.camera_model, valid_mask=model.valid_mask, filter_valid=True
+        )
+
+        # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
+        ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=False)
+        
+        ray_bundle.origins = ray_bundle.origins.to(dtype=torch.float32)
+        ray_bundle.directions = ray_bundle.directions.to(dtype=torch.float32)
+
+        # Run model forward
         out = model(ray_bundle)
 
         # Return rendered features (colors)
-        image = np.array(
-            out["feature"].view(image_size[1], image_size[0], 3).detach().cpu()
-        )
+        image = np.zeros((model.camera_model.ss.W, model.camera_model.ss.H, 3))
+        image[model.valid_mask == 1, :] = out["feature"].cpu().detach().numpy()
         all_images.append(image)
-
-        # Visualize depth
-        if cam_idx == 2 and file_prefix == "":
-            depth = out["depth"].view(image_size[1], image_size[0]).detach().cpu()
-            plt.imsave("data/depth.png", depth)
 
         # Save
         if save:
-            plt.imsave(f"{file_prefix}_{cam_idx}.png", image)
+            plt.imsave(f"{file_prefix}_{theta}.png", image)
+
+    return all_images
+
+
+def render_images_in_poses(model, dataset, num_images = -1, save=False, file_prefix="", fix_heading=False):
+    # TODO: Make this work for both regular / fisheye cameras
+    # (would be cool to see renders for both!)
+    """
+    Render a list of images from the given viewpoints.
+
+    """
+    all_images = []
+    device = list(model.parameters())[0].device
+
+    # Sort poses by x, y, z.
+    poses = []
+
+    # A dataloader for the images and poses.
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=1, # One image at a time, and the batches are of ray samples.
+        shuffle=False,
+        num_workers=0,
+        collate_fn=trivial_collate,
+    )
+
+    # Rotate around the origin of the camera. Aka, assign rotations to the input translation.
+    for iter, batch in enumerate(dataloader):
+
+        if num_images > 0 and iter >= num_images:
+            break
+
+        # Get the batch contents.
+        image_gt, pose = batch[0]
+
+        # Fix the heading, if required.
+        if fix_heading:
+            pose[3:] = 0
+            pose[-1] = 1
+
+        pixel_coords, pixel_xys = get_pixels_from_image(
+            model.camera_model, valid_mask=model.valid_mask, filter_valid=True
+        )
+
+        # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
+        ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=False)
+        
+        ray_bundle.origins = ray_bundle.origins.to(dtype=torch.float32)
+        ray_bundle.directions = ray_bundle.directions.to(dtype=torch.float32)
+
+        # Run model forward
+        out = model(ray_bundle)
+
+        # Return rendered features (colors)
+        image = np.zeros((model.camera_model.ss.W, model.camera_model.ss.H, 3))
+        image[model.valid_mask == 1, :] = out["feature"].cpu().detach().numpy()
+
+        # Concatenate the original images and the rendered images.
+        image = np.concatenate((image_gt/255.0, image), axis=1)
+
+
+        all_images.append(image)
+
+        # Save
+        if save:
+            plt.imsave(f"{file_prefix}_traj.png", image)
 
     return all_images
