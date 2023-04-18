@@ -1,0 +1,21 @@
+name: fish_conda
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.10
+  - pytorch
+  - torchvision
+  - pytorch-cuda=11.8
+  - ca-certificates
+  - openssl
+  - tqdm
+  - matplotlib
+  - imageio
+  - hydra-core
+  - certifi
+  - scipy
+  - pip
+  - pip:
+    - pypose
