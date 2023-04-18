@@ -162,7 +162,7 @@ def train(cfg):
     for epoch in range(start_epoch, cfg.training.num_epochs):
         t_range = tqdm.tqdm(enumerate(train_dataloader), total=len(train_dataloader))
 
-        pose_est = pose_model.init_c2w @ pose_model.delta.Exp()
+        pose_est = pose_model()
         pose_error = (train_dataset.poses_gt.Inv()@pose_est).Log().norm() # torch.linalg.inv(pose_gt)@pose
 
         for iteration, batch in t_range:

@@ -134,7 +134,7 @@ def render_images_in_poses(model, camera, pose_model, dataset, num_images = -1, 
 
     # ------------------------- Save trajectory as well ------------------------- #
     if save_traj:
-        pose_est = (pose_model.init_c2w @ pose_model.delta.Exp()).translation().cpu()
+        pose_est = pose_model().translation().cpu()
         poses_gt = dataset.poses_gt.translation().cpu()
         fig = plt.figure()
         ax = fig.add_subplot(111)

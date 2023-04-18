@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from fish_nerf.ray import RayBundle
-from utils.lie_groups import make_c2w
 
 import pypose as pp
 from image_resampling.mvs_utils.camera_models import LinearSphere
@@ -198,12 +197,17 @@ class PoseModel(nn.Module):
         if init_c2w is not None:
             self.init_c2w = pp.Parameter(init_c2w, requires_grad=False)
 
-        self.delta = pp.Parameter(
-            pp.identity_se3(num_cams), requires_grad=train_R
+        self.delta_R = pp.Parameter(
+            pp.identity_so3(num_cams), requires_grad=train_R
         )  # (N, 6)
+        self.delta_t = nn.Parameter(
+            torch.zeros((self.num_cams, 3)), requires_grad=train_t
+        )
 
-    def forward(self, cam_id):
-        pose = self.delta[cam_id].Exp()
+    def forward(self, cam_id=slice(0,None)):
+        pose = pp.SE3(
+            torch.hstack((self.delta_t[cam_id], self.delta_R[cam_id].Exp().tensor()))
+        )
 
         # learn a delta pose between init pose and target pose,
         # if a init pose is provided
@@ -215,8 +219,12 @@ class PoseModel(nn.Module):
     def apply_delta(self):
         if self.init_c2w is not None:
             with torch.no_grad():
-                self.init_c2w[:] = self.init_c2w @ self.delta.Exp()
-                self.delta[:] = pp.identity_se3(self.num_cams)
+                pose = pp.SE3(
+                    torch.hstack((self.delta_t, self.delta_R.Exp().tensor()))
+                )
+                self.init_c2w[:] = self.init_c2w @ pose
+                self.delta_R[:] = pp.identity_so3(self.num_cams)
+                self.delta_t[:] = torch.zeros((self.num_cams, 3))
 
 
 class LinearSphereModel(nn.Module):
