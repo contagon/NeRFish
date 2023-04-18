@@ -215,6 +215,18 @@ class PoseModel(nn.Module):
             c2w = self.init_c2w[cam_id] @ c2w
 
         return c2w
+    
+    def apply_delta(self):
+        if self.init_c2w is not None:
+            with torch.no_grad():
+                for i in range(self.num_cams):
+                    r = self.r[i]  # (3, ) axis-angle
+                    t = self.t[i]  # (3, )
+                    c2w = make_c2w(r, t)  # (4, 4)
+                    self.init_c2w[i] = self.init_c2w[i] @ c2w
+
+                self.r[:] = 0
+                self.t[:] = 0
 
 
 class LinearSphereModel(nn.Module):

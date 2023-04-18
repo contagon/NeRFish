@@ -14,7 +14,8 @@ training:
   checkpoint_interval: 50
   resume: True
 
-  render_interval: 50
+  render_interval: 100
+  render_length: -1
 
   train_intrinsics: True
   train_R: True

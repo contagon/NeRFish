@@ -207,6 +207,8 @@ def train(cfg):
         # Adjust the learning rate.
         lr_scheduler.step()
 
+        pose_model.apply_delta()
+
         # Checkpoint.
         if (
             epoch % cfg.training.checkpoint_interval == 0
@@ -249,7 +251,7 @@ def train(cfg):
                         camera,
                         pose_model,
                         train_dataset,
-                        num_images=10,
+                        num_images=cfg.training.render_length,
                         fix_heading = False
                     )
                     fig.savefig(f'results/training_{epoch}_traj.png')
