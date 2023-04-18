@@ -7,6 +7,7 @@ from torchvision import io
 from torchvision import transforms, io
 from colorama import Fore, Style
 from scipy.spatial.transform import Rotation
+import pypose as pp
 
 '''
 A Torch dataset for TartanAir-style data. It is a very simple implementation that can load only one trajectory at a time.
@@ -30,11 +31,7 @@ class TartanAirDataset(torch.utils.data.Dataset):
         # Get all the image poses up to memory for easy lookup.
         # Note(yoraish): poses are in the form of [x, y, z, qx, qy, qz, qw]. Those are in the robot frame, which is NED (x-forward, y-right, z-down). Confusingly, the camera frame is z-forward, x-right, y-down. I am unsure if we need to make a distinction here, but I am leaving this note here for now.
         poses_np = np.loadtxt(os.path.join(traj_data_root, 'pose_lcam_fish.txt'))
-        self.poses_gt = torch.zeros((poses_np.shape[0],4,4)).to(self.device)
-        self.poses_gt[:,-1,-1] = 1
-        for i, pose in enumerate(poses_np):
-            self.poses_gt[i,:3, 3] = torch.tensor(pose[:3])
-            self.poses_gt[i,:3, :3] = torch.tensor(Rotation.from_quat(pose[3:]).as_matrix())
+        self.poses_gt = pp.SE3(poses_np).to(device)
 
 
     def __len__(self):

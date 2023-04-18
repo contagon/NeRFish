@@ -1,7 +1,6 @@
 import sys
 from scipy.spatial.transform import Rotation
 
-sys.path.append("../fish_nerf")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
@@ -10,6 +9,7 @@ from fish_nerf.ray import get_pixels_from_image  # noqa: E402
 from fish_nerf.ray import get_rays_from_pixels  # noqa: E402
 from .dataset import trivial_collate
 from image_resampling.mvs_utils.camera_models import ShapeStruct, Pinhole
+import pypose as pp
 
 import tqdm
 
@@ -82,7 +82,6 @@ def render_images_in_poses(model, camera, pose_model, dataset, num_images = -1, 
     t_range = tqdm.tqdm(enumerate(dataloader), total=num_images)
 
     # Rotate around the origin of the camera. Aka, assign rotations to the input translation.
-    pose_est = torch.zeros((num_images,4,4))
     for iter, batch in t_range:
 
         if num_images > 0 and iter >= num_images:
@@ -94,7 +93,7 @@ def render_images_in_poses(model, camera, pose_model, dataset, num_images = -1, 
 
         # Fix the heading, if required.
         if fix_heading:
-            pose[:3,:3] = torch.eye(3)
+            pose.rotation().identity_()
 
         # ------------------------- Render fisheye ------------------------- #
         pixel_coords, pixel_xys = get_pixels_from_image(
@@ -131,15 +130,16 @@ def render_images_in_poses(model, camera, pose_model, dataset, num_images = -1, 
         image = np.concatenate((image_gt_viewed, image_fish, image_proj), axis=1)
 
         all_images.append(image)
-        pose_est[iter] = pose
 
 
     # ------------------------- Save trajectory as well ------------------------- #
     if save_traj:
+        pose_est = (pose_model.init_c2w @ pose_model.delta.Exp()).translation().cpu()
+        poses_gt = dataset.poses_gt.translation().cpu()
         fig = plt.figure()
         ax = fig.add_subplot(111)
-        ax.plot(pose_est[:,0,3], pose_est[:,1,3], marker='o')
-        ax.plot(dataset.poses_gt[:num_images,0,3].cpu(), dataset.poses_gt[:num_images,1,3].cpu(), marker='o')
+        ax.plot(pose_est[:,0], pose_est[:,1], marker='o')
+        ax.plot(poses_gt[:num_images,0].cpu(), poses_gt[:num_images,1].cpu(), marker='o')
     else:
         fig = None
 

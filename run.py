@@ -18,12 +18,10 @@ from fish_nerf.ray import (
 )
 from fish_nerf.renderer import renderer_dict
 from fish_nerf.sampler import sampler_dict
-from image_resampling.mvs_utils.camera_models import LinearSphere
-from image_resampling.mvs_utils.shape_struct import ShapeStruct
 from utils.dataset import get_dataset, trivial_collate
 from utils.render import render_images, render_images_in_poses
 
-np.set_printoptions(suppress=True, precision=3)
+np.set_printoptions(suppress=True, precision=3, linewidth=100)
 
 
 # Model class containing:
@@ -37,10 +35,10 @@ class Model(torch.nn.Module):
         super().__init__()
 
         # Some geometry that we need for conversions.
-        self.X_ned_cam = torch.tensor([[0, 0, 1, 0],
-                                    [1, 0, 0, 0],
-                                    [0, 1, 0, 0],
-                                    [0, 0, 0, 1]]).view(4, 4).float()
+        self.X_ned_cam = pp.from_matrix(torch.tensor([[0, 0, 1, 0],
+                                                    [1, 0, 0, 0],
+                                                    [0, 1, 0, 0],
+                                                    [0, 0, 0, 1]]).view(4, 4).float(), pp.SE3_type)
 
         # Get implicit function from config
         self.implicit_fn = volume_dict[cfg.implicit_function.type](
@@ -103,7 +101,11 @@ def create_model(cfg, poses_est=None):
 
     # Initialize the optimizer.
     optimizer = torch.optim.Adam(
-        list(model.parameters()) + list(camera.parameters()) + list(pose_model.parameters()),
+        [
+            {"params": model.parameters()},
+            {"params": camera.parameters(), "lr": cfg.training.lr},
+            {"params": pose_model.parameters(), "lr": cfg.training.lr},
+        ],
         lr=cfg.training.lr,
     )
 
@@ -149,7 +151,7 @@ def train(cfg):
     # Create model
     var_t = cfg.data.var_t if cfg.training.train_t else 0
     var_R = cfg.data.var_R if cfg.training.train_R else 0
-    noise = pp.randn_SE3(train_dataset.num_frames, sigma=[var_t, var_R]).matrix().cuda()
+    noise = pp.randn_SE3(train_dataset.num_frames, sigma=[var_t, var_R]).cuda()
     poses_est = train_dataset.poses_gt@noise
     model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg, poses_est)
 
@@ -159,6 +161,9 @@ def train(cfg):
     # Run the main training loop.
     for epoch in range(start_epoch, cfg.training.num_epochs):
         t_range = tqdm.tqdm(enumerate(train_dataloader), total=len(train_dataloader))
+
+        pose_est = pose_model.init_c2w @ pose_model.delta.Exp()
+        pose_error = (train_dataset.poses_gt.Inv()@pose_est).Log().norm() # torch.linalg.inv(pose_gt)@pose
 
         for iteration, batch in t_range:
             idx, image, pose_gt = batch[0] # Batches are not collated, so `batch` is a list of samples. Take the first one only. NOTE(yoraish): This means that a batch size larger than 1 passed to the torch.utils.data.DataLoader will be a waste of work, and the first sample in the batch will be used (and incorreectly so, since we'll try to index into the tensor and things will probably break).
@@ -193,8 +198,6 @@ def train(cfg):
 
             # Calculate loss
             loss = torch.nn.functional.mse_loss(out["feature"], rgb_gt)
-            pose_error = torch.linalg.inv(pose_gt)@pose
-            pose_error = pp.Log(pp.from_matrix(pose_error, pp.SE3_type)).norm()
 
             # Take the training step.
             optimizer.zero_grad()
