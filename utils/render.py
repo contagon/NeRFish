@@ -1,58 +1,20 @@
 import sys
-import cv2
 from scipy.spatial.transform import Rotation
 
 sys.path.append("../fish_nerf")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
-from pytorch3d.renderer import PerspectiveCameras  # noqa: E402
-from pytorch3d.renderer import look_at_view_transform  # noqa: E402
 
 from fish_nerf.ray import get_pixels_from_image  # noqa: E402
 from fish_nerf.ray import get_rays_from_pixels  # noqa: E402
 from .dataset import trivial_collate
+from image_resampling.mvs_utils.camera_models import ShapeStruct, Pinhole
+
+import tqdm
 
 
-def create_surround_cameras(radius, n_poses=20, up=(0.0, 1.0, 0.0), focal_length=1.0):
-    """
-    Spiral cameras looking at the origin
-    """
-    cameras = []
-
-    for theta in np.linspace(0, 2 * np.pi, n_poses + 1)[:-1]:
-        if np.abs(up[1]) > 0:
-            eye = [
-                np.cos(theta + np.pi / 2) * radius,
-                0,
-                -np.sin(theta + np.pi / 2) * radius,
-            ]
-        else:
-            eye = [
-                np.cos(theta + np.pi / 2) * radius,
-                np.sin(theta + np.pi / 2) * radius,
-                2.0,
-            ]
-
-        R, T = look_at_view_transform(
-            eye=(eye,),
-            at=([0.0, 0.0, 0.0],),
-            up=(up,),
-        )
-
-        cameras.append(
-            PerspectiveCameras(
-                focal_length=torch.tensor([focal_length])[None],
-                principal_point=torch.tensor([0.0, 0.0])[None],
-                R=R,
-                T=T,
-            )
-        )
-
-    return cameras
-
-
-def render_images(model, translation, num_images, save=False, file_prefix=""):
+def render_images(model, camera, translation, num_images):
     # TODO: Make this work for both regular / fisheye cameras
     # (would be cool to see renders for both!)
     """
@@ -61,6 +23,7 @@ def render_images(model, translation, num_images, save=False, file_prefix=""):
     """
     all_images = []
     device = list(model.parameters())[0].device
+    camera_model = camera.model
 
 
     # Rotate around the origin of the camera. Aka, assign rotations to the input translation.
@@ -69,11 +32,11 @@ def render_images(model, translation, num_images, save=False, file_prefix=""):
         pose = np.array([*translation, *quat])
 
         pixel_coords, pixel_xys = get_pixels_from_image(
-            model.camera_model, valid_mask=model.valid_mask, filter_valid=True
+            camera_model, filter_valid=True
         )
 
         # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
-        ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=False)
+        ray_bundle = get_rays_from_pixels(pixel_coords, camera_model, model.X_ned_cam, pose, debug=False)
         
         ray_bundle.origins = ray_bundle.origins.to(dtype=torch.float32)
         ray_bundle.directions = ray_bundle.directions.to(dtype=torch.float32)
@@ -82,29 +45,19 @@ def render_images(model, translation, num_images, save=False, file_prefix=""):
         out = model(ray_bundle)
 
         # Return rendered features (colors)
-        image = np.zeros((model.camera_model.ss.W, model.camera_model.ss.H, 3))
-        image[model.valid_mask == 1, :] = out["feature"].cpu().detach().numpy()
+        image = np.zeros((camera_model.ss.W, camera_model.ss.H, 3))
+        image[camera_model.get_valid_mask() == 1, :] = out["feature"].cpu().detach().numpy()
         all_images.append(image)
-
-        # Save
-        if save:
-            plt.imsave(f"{file_prefix}_{theta}.png", image)
 
     return all_images
 
 
-def render_images_in_poses(model, dataset, num_images = -1, save=False, file_prefix="", fix_heading=False):
-    # TODO: Make this work for both regular / fisheye cameras
-    # (would be cool to see renders for both!)
+def render_images_in_poses(model, camera, pose_model, dataset, num_images = -1, save_traj=True, fix_heading=False):
     """
     Render a list of images from the given viewpoints.
 
     """
     all_images = []
-    device = list(model.parameters())[0].device
-
-    # Sort poses by x, y, z.
-    poses = []
 
     # A dataloader for the images and poses.
     dataloader = torch.utils.data.DataLoader(
@@ -114,46 +67,81 @@ def render_images_in_poses(model, dataset, num_images = -1, save=False, file_pre
         num_workers=0,
         collate_fn=trivial_collate,
     )
+    
+    fish_camera_model = camera.model
+    pinhole_camera_model = Pinhole(128, 
+                               128, 
+                               128, 
+                               128, 
+                               ShapeStruct(256,256),
+                            in_to_tensor=False, 
+                            out_to_numpy=False)
+    pinhole_camera_model.device = 'cuda'
+
+    num_images = num_images if num_images != -1 else len(dataloader)
+    t_range = tqdm.tqdm(enumerate(dataloader), total=num_images)
 
     # Rotate around the origin of the camera. Aka, assign rotations to the input translation.
-    for iter, batch in enumerate(dataloader):
+    pose_est = torch.zeros((num_images,4,4))
+    for iter, batch in t_range:
 
         if num_images > 0 and iter >= num_images:
             break
 
         # Get the batch contents.
-        image_gt, pose = batch[0]
+        idx, image_gt, pose_gt = batch[0]
+        pose = pose_model(idx)
 
         # Fix the heading, if required.
         if fix_heading:
-            pose[3:] = 0
-            pose[-1] = 1
+            pose[:3,:3] = torch.eye(3)
 
+        # ------------------------- Render fisheye ------------------------- #
         pixel_coords, pixel_xys = get_pixels_from_image(
-            model.camera_model, valid_mask=model.valid_mask, filter_valid=True
+            fish_camera_model, filter_valid=True
         )
 
-        # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
-        ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=False)
-        
-        ray_bundle.origins = ray_bundle.origins.to(dtype=torch.float32)
-        ray_bundle.directions = ray_bundle.directions.to(dtype=torch.float32)
-
+        # Render
+        ray_bundle = get_rays_from_pixels(pixel_coords, fish_camera_model, model.X_ned_cam, pose, debug=False)
+ 
         # Run model forward
         out = model(ray_bundle)
 
         # Return rendered features (colors)
-        image = np.zeros((model.camera_model.ss.W, model.camera_model.ss.H, 3))
-        image[model.valid_mask == 1, :] = out["feature"].cpu().detach().numpy()
+        mask = fish_camera_model.get_valid_mask().cpu()
+        image_fish = np.zeros((fish_camera_model.ss.W, fish_camera_model.ss.H, 3))
+        image_fish[mask == 1, :] = out["feature"].cpu().detach().numpy()
 
+        # ------------------------- Render projective ------------------------- #        
+        pixel_coords, pixel_xys = get_pixels_from_image(
+            pinhole_camera_model, filter_valid=True
+        )
+
+        # Render
+        ray_bundle = get_rays_from_pixels(pixel_coords, pinhole_camera_model, model.X_ned_cam, pose, debug=False)
+ 
+        # Run model forward
+        out = model(ray_bundle)
+
+        image_proj = out["feature"].view(256,256,3).detach().cpu().numpy()
+
+        # ------------------------- Save & Return ------------------------- #
         # Concatenate the original images and the rendered images.
-        image = np.concatenate((image_gt/255.0, image), axis=1)
-
+        image_gt_viewed = image_gt.squeeze().permute(1,2,0).cpu()
+        image = np.concatenate((image_gt_viewed, image_fish, image_proj), axis=1)
 
         all_images.append(image)
+        pose_est[iter] = pose
 
-        # Save
-        if save:
-            plt.imsave(f"{file_prefix}_traj.png", image)
 
-    return all_images
+    # ------------------------- Save trajectory as well ------------------------- #
+    if save_traj:
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        ax.plot(pose_est[:,0,3], pose_est[:,1,3], marker='o')
+        ax.plot(dataset.poses_gt[:num_images,0,3].cpu(), dataset.poses_gt[:num_images,1,3].cpu(), marker='o')
+    else:
+        fig = None
+
+
+    return all_images, fig

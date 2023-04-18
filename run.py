@@ -7,11 +7,10 @@ import numpy as np
 import torch
 import tqdm
 from omegaconf import DictConfig
-import sys
-from torchvision import transforms
 import matplotlib.pyplot as plt
 
-from fish_nerf.implicit import volume_dict
+import pypose as pp
+from fish_nerf.models import volume_dict, LinearSphereModel, PoseModel
 from fish_nerf.ray import (
     get_random_pixels_from_image,
     get_rays_from_pixels,
@@ -19,16 +18,13 @@ from fish_nerf.ray import (
 )
 from fish_nerf.renderer import renderer_dict
 from fish_nerf.sampler import sampler_dict
+from image_resampling.mvs_utils.camera_models import LinearSphere
+from image_resampling.mvs_utils.shape_struct import ShapeStruct
 from utils.dataset import get_dataset, trivial_collate
-from utils.render import create_surround_cameras, render_images, render_images_in_poses
+from utils.render import render_images, render_images_in_poses
 
 np.set_printoptions(suppress=True, precision=3)
 
-# Local imports.
-sys.path.append('..')
-from image_resampling.mvs_utils.camera_models import LinearSphere
-from image_resampling.mvs_utils.shape_struct import ShapeStruct
-from utils.dataset import TartanAirDataset
 
 # Model class containing:
 #   1) Implicit volume defining the scene
@@ -39,16 +35,6 @@ from utils.dataset import TartanAirDataset
 class Model(torch.nn.Module):
     def __init__(self, cfg):
         super().__init__()
-
-        # Create the camera model. These are the intrinsics. of the dataset.
-        self.camera_model = LinearSphere(
-                    fov_degree = cfg.data.fov_degree, 
-                    shape_struct = ShapeStruct(256, 256),
-                    in_to_tensor=False, 
-                    out_to_numpy=False)
-        
-        self.valid_mask = self.camera_model.get_valid_mask()
-
 
         # Some geometry that we need for conversions.
         self.X_ned_cam = torch.tensor([[0, 0, 1, 0],
@@ -74,11 +60,20 @@ class Model(torch.nn.Module):
 
         return self.renderer(self.sampler, self.implicit_fn, ray_bundle)
 
-def create_model(cfg):
-    # Create model
+
+def create_model(cfg, poses_est=None):
+    # Create models
     model = Model(cfg)
     model.cuda()
     model.train()
+
+    camera = LinearSphereModel(cfg.data.fov_degree, req_grad=cfg.training.train_intrinsics)
+    camera.cuda()
+    camera.train()
+
+    pose_model = PoseModel(poses_est.shape[0], cfg.training.train_R, cfg.training.train_t, poses_est)
+    pose_model.cuda()
+    pose_model.train()
 
     # Load checkpoints
     optimizer_state_dict = None
@@ -97,7 +92,10 @@ def create_model(cfg):
         if cfg.training.resume and os.path.isfile(checkpoint_path):
             print(f"Resuming from checkpoint {checkpoint_path}.")
             loaded_data = torch.load(checkpoint_path)
+
             model.load_state_dict(loaded_data["model"])
+            camera.load_state_dict(loaded_data["camera"])
+            pose_model.load_state_dict(loaded_data["pose"])
             start_epoch = loaded_data["epoch"]
 
             print(f"   => resuming from epoch {start_epoch}.")
@@ -105,7 +103,7 @@ def create_model(cfg):
 
     # Initialize the optimizer.
     optimizer = torch.optim.Adam(
-        model.parameters(),
+        list(model.parameters()) + list(camera.parameters()) + list(pose_model.parameters()),
         lr=cfg.training.lr,
     )
 
@@ -124,16 +122,15 @@ def create_model(cfg):
         optimizer, lr_lambda, last_epoch=start_epoch - 1, verbose=False
     )
 
-    return model, optimizer, lr_scheduler, start_epoch, checkpoint_path
+    return model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path
 
 
 def train(cfg):
+    torch.manual_seed(cfg.seed)
 
-    # Image shape and size. Be convention, the image shape is [H, W] and the image size is [W, H].
+    # Image shape and size. Be convention,
+    # the image shape is [H, W] and the image size is [W, H].
     image_size = [cfg.data.image_shape[1], cfg.data.image_shape[0]]
-
-    # Create model
-    model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg)
 
     # Load the training/validation data.
     train_dataset, val_dataset = get_dataset(
@@ -143,42 +140,39 @@ def train(cfg):
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_size=1, # One image at a time, and the batches are of ray samples.
+        batch_size=1,  # One image at a time, and the batches are of ray samples.
         shuffle=True,
         num_workers=0,
         collate_fn=trivial_collate,
     )
 
-    # Transform numpy arrays to torch tensors. Addressing the shape and type of the tensors.
-    image_transform = transforms.Compose(
-        [
-            transforms.ToTensor(),
-        ]
-    )
+    # Create model
+    var_t = cfg.data.var_t if cfg.training.train_t else 0
+    var_R = cfg.data.var_R if cfg.training.train_R else 0
+    noise = pp.randn_SE3(train_dataset.num_frames, sigma=[var_t, var_R]).matrix().cuda()
+    poses_est = train_dataset.poses_gt@noise
+    model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg, poses_est)
 
     # Keep track of the camera poses (NED) seen so far (to sample from for validation).
     seen_camera_poses = set()
 
     # Run the main training loop.
     for epoch in range(start_epoch, cfg.training.num_epochs):
-        t_range = tqdm.tqdm(enumerate(train_dataloader))
+        t_range = tqdm.tqdm(enumerate(train_dataloader), total=len(train_dataloader))
 
         for iteration, batch in t_range:
-            image, pose = batch[0] # Batches are not collated, so `batch` is a list of samples. Take the first one only. NOTE(yoraish): This means that a batch size larger than 1 passed to the torch.utils.data.DataLoader will be a waste of work, and the first sample in the batch will be used (and incorreectly so, since we'll try to index into the tensor and things will probably break).
-            seen_camera_poses.add(tuple(pose))
-
-            # Transform image to tensor.
-            image = image_transform(image)
-            image = image.cuda().unsqueeze(0)
+            idx, image, pose_gt = batch[0] # Batches are not collated, so `batch` is a list of samples. Take the first one only. NOTE(yoraish): This means that a batch size larger than 1 passed to the torch.utils.data.DataLoader will be a waste of work, and the first sample in the batch will be used (and incorreectly so, since we'll try to index into the tensor and things will probably break).
+            pose = pose_model(idx)
+            seen_camera_poses.add(idx)
 
             # Sample rays. The xy grid is of shape (2, N), where N is the number of rays. The first row is the x (column) coordinates, and the second row is the y (row) coordinates. By convention, the image origin is top left, and the x axis is to the right, and the y axis is down.
             pixel_coords, pixel_xys = get_random_pixels_from_image(
-                cfg.training.batch_size, image_size, model.camera_model, valid_mask=model.valid_mask
+                cfg.training.batch_size, image_size, camera.model
             )
 
             if cfg.debug:
                 # Show the valid mask.
-                image_np = model.valid_mask.cpu().numpy()
+                image_np = camera.model.get_valid_mask().cpu().numpy()
                 plt.imshow(image_np)
                 plt.show()
 
@@ -189,27 +183,25 @@ def train(cfg):
                 plt.show()
 
             # A ray bundle is a collection of rays. RayBundle Object includes origins, directions, sample_points, sample_lengths. Origins are tensor (N, 3) in NED world frame, directions are tensor (N, 3) of unit vectors our of the camera origin defined in its own NED origin, sample_points are tensor (N, S, 3), sample_lengths are tensor (N, S - 1) of the lengths of the segments between sample_points.
-            ray_bundle = get_rays_from_pixels(pixel_coords, model.camera_model, model.X_ned_cam, pose, debug=cfg.debug)
+            ray_bundle = get_rays_from_pixels(pixel_coords, camera.model, model.X_ned_cam, pose, debug=cfg.debug)
           
             # Sample the image at the sampled pixels. rgb_gt is of shape (N, 3), where N is the number of rays.
-            # rgb_gt = sample_images_at_xy(image, xy_grid)
             rgb_gt = image[:, :, pixel_coords[1, :].long(), pixel_coords[0, :].long()].squeeze(0).transpose(0, 1)
-
-            ray_bundle.origins = ray_bundle.origins.to(dtype=torch.float32)
-            ray_bundle.directions = ray_bundle.directions.to(dtype=torch.float32)
 
             # Run model forward
             out = model(ray_bundle)
 
             # Calculate loss
             loss = torch.nn.functional.mse_loss(out["feature"], rgb_gt)
+            pose_error = torch.linalg.inv(pose_gt)@pose
+            pose_error = pp.Log(pp.from_matrix(pose_error, pp.SE3_type)).norm()
 
             # Take the training step.
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            t_range.set_description(f"Epoch: {epoch:04d}, Loss: {loss:.06f}")
+            t_range.set_description(f"Epoch: {epoch:04d}, Loss: {loss:.06f}, FOV: {camera.forward():.03f}, Pose: {pose_error:.04f}")
             t_range.refresh()
 
         # Adjust the learning rate.
@@ -225,6 +217,8 @@ def train(cfg):
 
             data_to_store = {
                 "model": model.state_dict(),
+                "camera": camera.state_dict(),
+                "pose": pose_model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
             }
@@ -234,29 +228,32 @@ def train(cfg):
         # Render
         if epoch % cfg.training.render_interval == 0 and epoch > 0:
             with torch.no_grad():
-
-
-
                 # We can rednder images in a given pose, outputting a list of images showing the camera rotating around its own axis.
                 # Choose a random camera pose.
                 if cfg.vis_style == "random_pose":
-                    random_pose = random.sample(seen_camera_poses, 1)[0]
-                    random_pose = np.array(random_pose)
+                    idx = random.sample(seen_camera_poses, 1)[0]
+                    random_pose = pose_model(idx)
                     print(f"Rendering at pose {random_pose}.")
                     test_images = render_images(
                         model,
-                        translation = random_pose[0:3],
+                        camera,
+                        translation = random_pose[:3,3],
                         num_images=20,
                     )
                 
                 # We can also use a torch dataset to render images. The poses from the dataset are used as input to the model and the output is rendered, concaternated with the ground truth image, and returned. Note that we can also optionally fix the heading of the camera to xyzw = 0001.
                 if cfg.vis_style == "trajectory":
-                    test_images = render_images_in_poses(
+                    print("Rendering Trajectory")
+                    test_images, fig = render_images_in_poses(
                         model,
+                        camera,
+                        pose_model,
                         train_dataset,
-                        num_images=100,
-                        fix_heading = True
+                        num_images=10,
+                        fix_heading = False
                     )
+                    fig.savefig(f'results/training_{epoch}_traj.png')
+                    fig.clf()
 
                 imageio.mimsave(
                     f"results/training_{epoch}.gif",
@@ -264,6 +261,7 @@ def train(cfg):
                 )
 
 
+# TODO: Clean this up so we can render w/o training
 def render(
     cfg,
 ):
@@ -272,8 +270,8 @@ def render(
     model = model.cuda()
     model.eval()
 
-    # Render spiral
-    cameras = create_surround_cameras(3.0, n_poses=20)
+#     # Render spiral
+#     cameras = create_surround_cameras(3.0, n_poses=20)
     all_images = render_images(model, cameras, cfg.data.image_shape)
     imageio.mimsave("results/3d_revolve.gif", [np.uint8(im * 255) for im in all_images])
 

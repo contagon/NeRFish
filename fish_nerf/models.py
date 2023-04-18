@@ -1,10 +1,17 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from fish_nerf.ray import RayBundle
+from utils.lie_groups import make_c2w
+
+from image_resampling.mvs_utils.camera_models import LinearSphere
+from image_resampling.mvs_utils.shape_struct import ShapeStruct
+
+# ------------------------- Helper Modules ------------------------- #
 
 
-class HarmonicEmbedding(torch.nn.Module):
+class HarmonicEmbedding(nn.Module):
     def __init__(
         self,
         in_channels: int = 3,
@@ -55,7 +62,7 @@ class LinearWithRepeat(torch.nn.Linear):
         return tog.view(-1, out_size)
 
 
-class MLPWithInputSkips(torch.nn.Module):
+class MLPWithInputSkips(nn.Module):
     def __init__(
         self,
         n_layers: int,
@@ -84,7 +91,7 @@ class MLPWithInputSkips(torch.nn.Module):
             do_xavier(linear)
             layers.append(torch.nn.Sequential(linear, torch.nn.ReLU(True)))
 
-        self.mlp = torch.nn.ModuleList(layers)
+        self.mlp = nn.ModuleList(layers)
         self._input_skips = set(input_skips)
 
     def forward(self, x: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
@@ -103,7 +110,10 @@ def do_xavier(layer):
     torch.nn.init.xavier_uniform_(layer.weight.data)
 
 
-class NeuralRadianceField(torch.nn.Module):
+# ------------------------- Actual Models ------------------------- #
+
+
+class NeuralRadianceField(nn.Module):
     def __init__(
         self,
         cfg,
@@ -171,6 +181,66 @@ class NeuralRadianceField(torch.nn.Module):
 
         return final
 
+
+# https://github.com/ActiveVisionLab/nerfmm/blob/main/models/poses.py
+class PoseModel(nn.Module):
+    def __init__(self, num_cams, learn_R, learn_t, init_c2w=None):
+        """
+        :param num_cams:
+        :param learn_R:  True/False
+        :param learn_t:  True/False
+        :param init_c2w: (N, 4, 4) torch tensor
+        """
+        super(PoseModel, self).__init__()
+        self.num_cams = num_cams
+        self.init_c2w = None
+        if init_c2w is not None:
+            self.init_c2w = nn.Parameter(init_c2w, requires_grad=False)
+
+        self.r = nn.Parameter(
+            torch.zeros(size=(num_cams, 3), dtype=torch.float32), requires_grad=learn_R
+        )  # (N, 3)
+        self.t = nn.Parameter(
+            torch.zeros(size=(num_cams, 3), dtype=torch.float32), requires_grad=learn_t
+        )  # (N, 3)
+
+    def forward(self, cam_id):
+        r = self.r[cam_id]  # (3, ) axis-angle
+        t = self.t[cam_id]  # (3, )
+        c2w = make_c2w(r, t)  # (4, 4)
+
+        # learn a delta pose between init pose and target pose,
+        # if a init pose is provided
+        if self.init_c2w is not None:
+            c2w = self.init_c2w[cam_id] @ c2w
+
+        return c2w
+
+
+class LinearSphereModel(nn.Module):
+    def __init__(self, fov_degree, req_grad):
+
+        super(LinearSphereModel, self).__init__()
+        
+        self.fov = nn.Parameter(torch.tensor(fov_degree), requires_grad=False)
+        self.delta = nn.Parameter(
+            torch.tensor(1.0, dtype=torch.float32), requires_grad=req_grad
+        )  # (1, )
+
+
+    def forward(self):
+        # Rather than use additive delta here, NeRF-- uses a scale squared
+        return self.fov * self.delta**2
+
+    @property
+    def model(self):
+        fish = LinearSphere(
+            fov_degree = self.forward(), 
+            shape_struct = ShapeStruct(256, 256),
+            in_to_tensor=False, 
+            out_to_numpy=False)
+        fish.device = self.delta.device
+        return fish
 
 volume_dict = {
     "nerf": NeuralRadianceField,
