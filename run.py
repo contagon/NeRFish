@@ -10,120 +10,17 @@ from omegaconf import DictConfig
 import matplotlib.pyplot as plt
 
 import pypose as pp
-from fish_nerf.models import volume_dict, LinearSphereModel, PoseModel
 from fish_nerf.ray import (
     get_random_pixels_from_image,
     get_rays_from_pixels,
 )
-from fish_nerf.renderer import renderer_dict
-from fish_nerf.sampler import sampler_dict
+
+from fish_nerf.create import create_model
 from utils.dataset import get_dataset, trivial_collate
 from utils.render import render_images, render_images_in_poses
 from utils.datasaver import IterationState
-
+from utils.plot import animate_pose, plot_params
 np.set_printoptions(suppress=True, precision=3, linewidth=100)
-
-# Model class containing:
-#   1) Implicit volume defining the scene
-#   2) Sampling scheme which generates sample points along rays
-#   3) Renderer which can render an implicit volume given a sampling scheme
-
-
-class Model(torch.nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-
-        # Some geometry that we need for conversions.
-        self.X_ned_cam = pp.from_matrix(torch.tensor([[0, 0, 1, 0],
-                                                    [1, 0, 0, 0],
-                                                    [0, 1, 0, 0],
-                                                    [0, 0, 0, 1]]).view(4, 4).float(), pp.SE3_type)
-
-        # Get implicit function from config
-        self.implicit_fn = volume_dict[cfg.implicit_function.type](
-            cfg.implicit_function
-        )
-
-        # Point sampling (raymarching) scheme
-        self.sampler = sampler_dict[cfg.sampler.type](cfg.sampler)
-
-        # Initialize volume renderer
-        self.renderer = renderer_dict[cfg.renderer.type](cfg.renderer)
-
-    def forward(self, ray_bundle):
-        # Call renderer with
-        #  a) Implicit volume
-        #  b) Sampling routine
-
-        return self.renderer(self.sampler, self.implicit_fn, ray_bundle)
-
-
-def create_model(cfg, poses_est=None):
-    # Create models
-    model = Model(cfg)
-    model.cuda()
-    model.train()
-
-    camera = LinearSphereModel(cfg.data.fov_degree, req_grad=cfg.training.train_intrinsics)
-    camera.cuda()
-    camera.train()
-
-    pose_model = PoseModel(poses_est.shape[0], cfg.training.train_R, cfg.training.train_t, poses_est)
-    pose_model.cuda()
-    pose_model.train()
-
-    # Load checkpoints
-    optimizer_state_dict = None
-    start_epoch = 0
-
-    checkpoint_path = os.path.join(
-        hydra.utils.get_original_cwd(), cfg.training.checkpoint_path
-    )
-
-    if len(cfg.training.checkpoint_path) > 0:
-        # Make the root of the experiment directory.
-        checkpoint_dir = os.path.split(checkpoint_path)[0]
-        os.makedirs(checkpoint_dir, exist_ok=True)
-
-        # Resume training if requested.
-        if cfg.training.resume and os.path.isfile(checkpoint_path):
-            print(f"Resuming from checkpoint {checkpoint_path}.")
-            loaded_data = torch.load(checkpoint_path)
-
-            model.load_state_dict(loaded_data["model"])
-            camera.load_state_dict(loaded_data["camera"])
-            pose_model.load_state_dict(loaded_data["pose"])
-            start_epoch = loaded_data["epoch"]
-
-            print(f"   => resuming from epoch {start_epoch}.")
-            optimizer_state_dict = loaded_data["optimizer"]
-
-    # Initialize the optimizer.
-    optimizer = torch.optim.Adam(
-        [
-            {"params": model.parameters()},
-            {"params": camera.parameters(), "lr": cfg.training.lr},
-            {"params": pose_model.parameters(), "lr": cfg.training.lr},
-        ],
-        lr=cfg.training.lr,
-    )
-
-    # Load the optimizer state dict in case we are resuming.
-    if optimizer_state_dict is not None:
-        optimizer.load_state_dict(optimizer_state_dict)
-        optimizer.last_epoch = start_epoch
-
-    # The learning rate scheduling is implemented with LambdaLR PyTorch scheduler.
-    def lr_lambda(epoch):
-        return cfg.training.lr_scheduler_gamma ** (
-            epoch / cfg.training.lr_scheduler_step_size
-        )
-
-    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lr_lambda, last_epoch=start_epoch - 1, verbose=False
-    )
-
-    return model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path
 
 
 def train(cfg):
@@ -150,7 +47,7 @@ def train(cfg):
     var_R = cfg.data.var_R if cfg.training.train_R else 0
     noise = pp.randn_SE3(train_dataset.num_frames, sigma=[var_t, var_R]).cuda()
     poses_est = train_dataset.poses_gt@noise
-    model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg, poses_est)
+    model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg, train_dataset.num_frames, poses_est)
 
     # Keep track of the camera poses (NED) seen so far (to sample from for validation).
     seen_camera_poses = set()
@@ -270,19 +167,59 @@ def train(cfg):
                 )
 
 
-# TODO: Clean this up so we can render w/o training
-def render(
-    cfg,
-):
-    # Create model
-    model = Model(cfg)
-    model = model.cuda()
-    model.eval()
+def render(cfg):
+    # Load the training/validation data.
+    train_dataset, val_dataset = get_dataset(
+        traj_data_root=cfg.data.traj_data_root,
+        image_shape=[cfg.data.image_shape[1], cfg.data.image_shape[0]],
+    )
 
-#     # Render spiral
-#     cameras = create_surround_cameras(3.0, n_poses=20)
-    all_images = render_images(model, cameras, cfg.data.image_shape)
-    imageio.mimsave("results/3d_revolve.gif", [np.uint8(im * 255) for im in all_images])
+    # Create model
+    model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg, train_dataset.num_frames, train_dataset.poses_gt)
+
+    # Figure out our save folder
+    data_type = cfg.data.traj_data_root.split(os.sep)[1]
+    out_folder = os.path.join('media', data_type)
+    if not os.path.exists(out_folder):
+        os.mkdir(out_folder)
+
+    # Load saved data
+    data = np.load(checkpoint_path + "_data.npz")
+
+    # Render image
+    print("Rendering Trajectory")
+    with torch.no_grad():
+        test_images, fig = render_images_in_poses(
+            model,
+            camera,
+            pose_model,
+            train_dataset,
+            num_images=cfg.training.render_length,
+            fix_heading = False
+        )
+        fig.clf()
+        imageio.mimsave(
+            os.path.join(out_folder, "render.gif"),
+            [np.uint8(im * 255) for im in test_images],
+        )
+
+    # Animate poses
+    print("Animating poses")
+    animate_pose(
+        data["pose"], 
+        train_dataset.poses_gt.cpu().tensor(), 
+        os.path.join(out_folder, "animate_poses.gif"), 
+        cfg.plot.num_animate
+    )
+    plt.clf()
+
+    # Epoch / Loss
+    print("Animating poses")
+    plot_params(
+        data["loss"], 
+        data["fov"], 
+        os.path.join(out_folder, "loss_fov.png")
+    )
 
 
 @hydra.main(config_path="./configs", config_name="main", version_base=None)

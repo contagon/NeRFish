@@ -37,18 +37,19 @@ def plot_params(loss, fov, file):
     ax[1].set_title("Field of View (degrees)")
 
     plt.savefig(file)
-    plt.show()
 
-def animate_pose(pose, dataset, file, n):
+def animate_pose(pose, gt, file, n):
     c = setup_plot()
 
     if file is None:
         file = "media/animate_poses.gif"
+    if n == 0:
+        n = pose.shape[0]
 
     fig, ax = plt.subplots(1, 1, layout="constrained")
     
     # Plot ground truth
-    trans_gt = get_dataset(dataset)[0].poses_gt.cpu().translation()
+    trans_gt = gt[:,:3]
     ax.plot(trans_gt[:,0], trans_gt[:,1], marker='.', c=c[7], label="GT")
 
     # Plot our estimate
@@ -68,13 +69,14 @@ def animate_pose(pose, dataset, file, n):
     ani = animation.FuncAnimation(fig, animate, frames=trans_est.shape[0], interval=10, repeat=True)
     ani.save(file, writer='Pillow')
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument('-i', '--data', type=str, default='checkpoints_data.npz')
     parser.add_argument('-o', '--outfile', type=str, default=None)
     parser.add_argument('--kind', type=str, help='Either pose or params')
-    parser.add_argument('-n', '--num', type=int, help='How many epochs to render')
+    parser.add_argument('-n', '--num', type=int, default=0, help='How many epochs to render')
 
     args = parser.parse_args()
 
@@ -84,4 +86,5 @@ if __name__ == "__main__":
         plot_params(data["loss"], data["fov"], args.outfile)
     
     if args.kind == "pose":
-        animate_pose(data["pose"], str(data["dataset"]), args.outfile, args.num)
+        gt = get_dataset(str(data["dataset"]))[0].poses_gt.cpu().tensor()
+        animate_pose(data["pose"], gt, args.outfile, args.num)

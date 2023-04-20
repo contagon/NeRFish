@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from fish_nerf.ray import RayBundle
+from fish_nerf.sampler import sampler_dict
+from fish_nerf.renderer import renderer_dict
 
 import pypose as pp
 from image_resampling.mvs_utils.camera_models import LinearSphere
@@ -180,6 +182,41 @@ class NeuralRadianceField(nn.Module):
         }
 
         return final
+
+
+# Model class containing:
+#   1) Implicit volume defining the scene
+#   2) Sampling scheme which generates sample points along rays
+#   3) Renderer which can render an implicit volume given a sampling scheme
+
+
+class Model(torch.nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+
+        # Some geometry that we need for conversions.
+        self.X_ned_cam = pp.from_matrix(torch.tensor([[0, 0, 1, 0],
+                                                    [1, 0, 0, 0],
+                                                    [0, 1, 0, 0],
+                                                    [0, 0, 0, 1]]).view(4, 4).float(), pp.SE3_type)
+
+        # Get implicit function from config
+        self.implicit_fn = volume_dict[cfg.implicit_function.type](
+            cfg.implicit_function
+        )
+
+        # Point sampling (raymarching) scheme
+        self.sampler = sampler_dict[cfg.sampler.type](cfg.sampler)
+
+        # Initialize volume renderer
+        self.renderer = renderer_dict[cfg.renderer.type](cfg.renderer)
+
+    def forward(self, ray_bundle):
+        # Call renderer with
+        #  a) Implicit volume
+        #  b) Sampling routine
+
+        return self.renderer(self.sampler, self.implicit_fn, ray_bundle)
 
 
 # https://github.com/ActiveVisionLab/nerfmm/blob/main/models/poses.py

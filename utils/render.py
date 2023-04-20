@@ -15,7 +15,7 @@ import tqdm
 
 
 def render_images(model, camera, translation, num_images):
-    # TODO: Make this work for both regular / fisheye cameras
+    # TODO: This is probably broken
     # (would be cool to see renders for both!)
     """
     Render a list of images from the given viewpoints.
