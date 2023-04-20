@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from fish_nerf.ray import RayBundle
-from utils.lie_groups import make_c2w
 
+import pypose as pp
 from image_resampling.mvs_utils.camera_models import LinearSphere
 from image_resampling.mvs_utils.shape_struct import ShapeStruct
 
@@ -184,7 +184,7 @@ class NeuralRadianceField(nn.Module):
 
 # https://github.com/ActiveVisionLab/nerfmm/blob/main/models/poses.py
 class PoseModel(nn.Module):
-    def __init__(self, num_cams, learn_R, learn_t, init_c2w=None):
+    def __init__(self, num_cams, train_R, train_t, init_c2w=None):
         """
         :param num_cams:
         :param learn_R:  True/False
@@ -195,26 +195,36 @@ class PoseModel(nn.Module):
         self.num_cams = num_cams
         self.init_c2w = None
         if init_c2w is not None:
-            self.init_c2w = nn.Parameter(init_c2w, requires_grad=False)
+            self.init_c2w = pp.Parameter(init_c2w, requires_grad=False)
 
-        self.r = nn.Parameter(
-            torch.zeros(size=(num_cams, 3), dtype=torch.float32), requires_grad=learn_R
-        )  # (N, 3)
-        self.t = nn.Parameter(
-            torch.zeros(size=(num_cams, 3), dtype=torch.float32), requires_grad=learn_t
-        )  # (N, 3)
+        self.delta_R = pp.Parameter(
+            pp.identity_so3(num_cams), requires_grad=train_R
+        )  # (N, 6)
+        self.delta_t = nn.Parameter(
+            torch.zeros((self.num_cams, 3)), requires_grad=train_t
+        )
 
-    def forward(self, cam_id):
-        r = self.r[cam_id]  # (3, ) axis-angle
-        t = self.t[cam_id]  # (3, )
-        c2w = make_c2w(r, t)  # (4, 4)
+    def forward(self, cam_id=slice(0,None)):
+        pose = pp.SE3(
+            torch.hstack((self.delta_t[cam_id], self.delta_R[cam_id].Exp().tensor()))
+        )
 
         # learn a delta pose between init pose and target pose,
         # if a init pose is provided
         if self.init_c2w is not None:
-            c2w = self.init_c2w[cam_id] @ c2w
+            pose = self.init_c2w[cam_id] @ pose
 
-        return c2w
+        return pose
+    
+    def apply_delta(self):
+        if self.init_c2w is not None:
+            with torch.no_grad():
+                pose = pp.SE3(
+                    torch.hstack((self.delta_t, self.delta_R.Exp().tensor()))
+                )
+                self.init_c2w[:] = self.init_c2w @ pose
+                self.delta_R[:] = pp.identity_so3(self.num_cams)
+                self.delta_t[:] = torch.zeros((self.num_cams, 3))
 
 
 class LinearSphereModel(nn.Module):

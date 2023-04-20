@@ -170,25 +170,21 @@ def get_rays_from_pixels(pixel_coords, camera, X_ned_cam, camera_pose_ned, debug
     # Map pixels to 3D points on the unit sphere (otherwise known as unit vectors.) These are in the camera's coordinate system (z forward, x right, y down). The output is of shape (3, N), where N is the number of pixels.
     x_cam_rays, valid_mask = camera.pixel_2_ray(pixel_coords)
 
-    # In homogeneous coordinates.
-    x_cam_rays = torch.stack([x_cam_rays[0], x_cam_rays[1], x_cam_rays[2], torch.ones_like(x_cam_rays[0])], dim=0)
-
     # Transform the rays from the camera's coordinate system to the base coordinate system, which is NED.
     # Rays in the base frame NED.
     X_ned_cam = X_ned_cam.to(x_cam_rays.device)
-    x_base_rays = X_ned_cam @ x_cam_rays
+    x_base_rays = X_ned_cam @ x_cam_rays.T
     x_base_rays = x_base_rays.to(device=x_cam_rays.device)
        
     # Get ray origins from camera center.
-    rays_o = camera_pose_ned[:3,3]
-    rays_o = rays_o.repeat(x_base_rays.shape[1], 1)
+    rays_o = camera_pose_ned.translation()
+    rays_o = rays_o.repeat(x_base_rays.shape[0], 1)
 
     # Rotate the rays by the base rotation, which would yield their directions in the world frame (yes it is still NED). 
     # First, convert the pose to a transformation matrix.
     X_world_base = camera_pose_ned
-    R_world_base = X_world_base[:3, :3]
-    rays_d = R_world_base @ x_base_rays[:3]
-    rays_d = rays_d.T.contiguous()
+    R_world_base = X_world_base.rotation()
+    rays_d = R_world_base @ x_base_rays
 
     if debug:
         # Visualize the rays.   
