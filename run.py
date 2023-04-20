@@ -175,7 +175,8 @@ def render(cfg):
     )
 
     # Create model
-    model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg, train_dataset.num_frames, train_dataset.poses_gt)
+    poses = train_dataset.poses_gt.clone()
+    model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg, train_dataset.num_frames, poses)
 
     # Figure out our save folder
     data_type = cfg.data.traj_data_root.split(os.sep)[1]
