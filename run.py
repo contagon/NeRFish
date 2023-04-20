@@ -143,7 +143,7 @@ def train(cfg):
                     test_images = render_images(
                         model,
                         camera,
-                        translation = random_pose[:3,3],
+                        translation = random_pose[:3, 3],
                         num_images=20,
                     )
                 

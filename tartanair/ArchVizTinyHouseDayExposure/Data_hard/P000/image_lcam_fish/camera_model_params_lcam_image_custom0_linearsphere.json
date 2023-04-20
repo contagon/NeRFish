@@ -1,0 +1,26 @@
+{
+    "name": "linearsphere",
+    "raw_side": "left",
+    "params": {
+        "height": 256,
+        "width": 256,
+        "fov_degree": 195
+    },
+    "R_raw_new": [
+        [
+            1.0,
+            0.0,
+            0.0
+        ],
+        [
+            0.0,
+            1.0,
+            0.0
+        ],
+        [
+            0.0,
+            0.0,
+            1.0
+        ]
+    ]
+}
