@@ -67,7 +67,7 @@ def animate_pose(pose, gt, file, n):
         line_est.set_data(trans_est[i,:,0], trans_est[i,:,1])
 
     ani = animation.FuncAnimation(fig, animate, frames=trans_est.shape[0], interval=10, repeat=True)
-    ani.save(file, writer='Pillow')
+    ani.save(file, writer=animation.PillowWriter())
 
 
 if __name__ == "__main__":

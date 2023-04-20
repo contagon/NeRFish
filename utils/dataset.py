@@ -15,7 +15,7 @@ class TartanAirDataset(torch.utils.data.Dataset):
     def __init__(self, traj_data_root, image_shape=[256, 256], device='cuda'):
 
         # Set member variables.
-        self.num_frames = len(os.listdir(os.path.join(traj_data_root, 'image_lcam_fish')))
+        self.num_frames = len([f for f in os.listdir(os.path.join(traj_data_root, 'image_lcam_fish')) if os.path.splitext(f)[-1] == ".png"])
         print(Fore.GREEN + 'Found {} frames.'.format(self.num_frames) + Style.RESET_ALL)
         
         # Dataset root.
