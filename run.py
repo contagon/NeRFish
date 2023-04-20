@@ -237,7 +237,7 @@ def train(cfg):
                     test_images = render_images(
                         model,
                         camera,
-                        translation = random_pose[:3,3],
+                        translation = random_pose[:3, 3],
                         num_images=20,
                     )
                 
@@ -249,8 +249,8 @@ def train(cfg):
                         camera,
                         pose_model,
                         train_dataset,
-                        num_images=10,
-                        fix_heading = False
+                        num_images=cfg.render_num_images,
+                        fix_heading = True
                     )
                     fig.savefig(f'results/training_{epoch}_traj.png')
                     fig.clf()
