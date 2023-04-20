@@ -14,8 +14,8 @@ training:
   checkpoint_interval: 50
   resume: True
 
-  render_interval: 100
-  render_length: -1
+  render_interval: 10
+  render_num_images: 10
 
   train_intrinsics: True
   train_R: False
