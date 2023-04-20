@@ -232,12 +232,12 @@ def train(cfg):
                 # Choose a random camera pose.
                 if cfg.vis_style == "random_pose":
                     idx = random.sample(seen_camera_poses, 1)[0]
-                    random_pose = np.array(idx)
+                    random_pose = pose_model(idx)
                     print(f"Rendering at pose {random_pose}.")
                     test_images = render_images(
                         model,
                         camera,
-                        translation = random_pose[0:3],
+                        translation = random_pose[:3, 3],
                         num_images=20,
                     )
                 
