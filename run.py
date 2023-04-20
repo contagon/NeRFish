@@ -231,13 +231,12 @@ def train(cfg):
                 # We can rednder images in a given pose, outputting a list of images showing the camera rotating around its own axis.
                 # Choose a random camera pose.
                 if cfg.vis_style == "random_pose":
-                    idx = random.sample(seen_camera_poses, 1)[0]
-                    random_pose = pose_model(idx)
+                    random_pose = random.sample(seen_camera_poses, 1)[0]
+                    random_pose = np.array(random_pose)
                     print(f"Rendering at pose {random_pose}.")
                     test_images = render_images(
                         model,
-                        camera,
-                        translation = random_pose[:3,3],
+                        translation = random_pose[0:3],
                         num_images=20,
                     )
                 
@@ -249,8 +248,8 @@ def train(cfg):
                         camera,
                         pose_model,
                         train_dataset,
-                        num_images=10,
-                        fix_heading = False
+                        num_images=cfg.render_num_images,
+                        fix_heading = True
                     )
                     fig.savefig(f'results/training_{epoch}_traj.png')
                     fig.clf()
