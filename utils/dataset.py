@@ -6,7 +6,6 @@ import torch
 from torchvision import io
 from torchvision import transforms, io
 from colorama import Fore, Style
-from scipy.spatial.transform import Rotation
 import pypose as pp
 
 '''
@@ -54,7 +53,7 @@ class TartanAirDataset(torch.utils.data.Dataset):
 
         return idx, img.to(self.device), pose_gt
 
-def get_dataset(traj_data_root, image_shape):
+def get_dataset(traj_data_root, image_shape=[256,256]):
     '''
     Returns two datasets, one for training and one for validation.
     '''

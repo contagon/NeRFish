@@ -121,7 +121,7 @@ def get_pixels_from_image(camera, filter_valid=True):
 
 
 # Random subsampling of pixels from an image
-def get_random_pixels_from_image(n_pixels, image_size, camera):
+def get_random_pixels_from_image(n_pixels, camera):
     # xy_grid = get_pixels_from_image(image_size, camera)
 
     # # Random subsampling of pixel coordinates

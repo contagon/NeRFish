@@ -16,6 +16,7 @@ dependencies:
   - hydra-core
   - certifi
   - scipy
+  - seaborn
   - pip
   - pip:
     - pypose

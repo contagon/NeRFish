@@ -14,15 +14,14 @@ from fish_nerf.models import volume_dict, LinearSphereModel, PoseModel
 from fish_nerf.ray import (
     get_random_pixels_from_image,
     get_rays_from_pixels,
-    sample_images_at_xy,
 )
 from fish_nerf.renderer import renderer_dict
 from fish_nerf.sampler import sampler_dict
 from utils.dataset import get_dataset, trivial_collate
 from utils.render import render_images, render_images_in_poses
+from utils.datasaver import IterationState
 
 np.set_printoptions(suppress=True, precision=3, linewidth=100)
-
 
 # Model class containing:
 #   1) Implicit volume defining the scene
@@ -129,10 +128,8 @@ def create_model(cfg, poses_est=None):
 
 def train(cfg):
     torch.manual_seed(cfg.seed)
+    for_plotting = IterationState(cfg.data.traj_data_root)
 
-    # Image shape and size. Be convention,
-    # the image shape is [H, W] and the image size is [W, H].
-    image_size = [cfg.data.image_shape[1], cfg.data.image_shape[0]]
 
     # Load the training/validation data.
     train_dataset, val_dataset = get_dataset(
@@ -172,7 +169,7 @@ def train(cfg):
 
             # Sample rays. The xy grid is of shape (2, N), where N is the number of rays. The first row is the x (column) coordinates, and the second row is the y (row) coordinates. By convention, the image origin is top left, and the x axis is to the right, and the y axis is down.
             pixel_coords, pixel_xys = get_random_pixels_from_image(
-                cfg.training.batch_size, image_size, camera.model
+                cfg.training.batch_size, camera.model
             )
 
             if cfg.debug:
@@ -207,10 +204,14 @@ def train(cfg):
             t_range.set_description(f"Epoch: {epoch:04d}, Loss: {loss:.06f}, FOV: {camera.forward():.03f}, Pose: {pose_error:.04f}")
             t_range.refresh()
 
+            for_plotting.append(loss=loss.item(), fov=camera.forward().item())
+
         # Adjust the learning rate.
         lr_scheduler.step()
 
         pose_model.apply_delta()
+
+        for_plotting.end_epoch(pose=pose_model().tensor().detach().cpu().numpy())
 
         # Checkpoint.
         if (
@@ -227,6 +228,9 @@ def train(cfg):
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
             }
+
+            file = f"{checkpoint_path}_data.npz"
+            for_plotting.save(file)
 
             torch.save(data_to_store, checkpoint_path)
 
