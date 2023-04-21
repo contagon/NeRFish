@@ -255,7 +255,7 @@ def train(cfg):
                         pose_model,
                         train_dataset,
 
-                        num_images=cfg.render_num_images,
+                        num_images=cfg.training.render_num_images,
                         fix_heading = True
                     )
                     fig.savefig(f'results/training_{epoch}_traj.png')
