@@ -139,7 +139,7 @@ def render_images_in_poses(model, camera, pose_model, dataset, num_images = -1, 
         fig = plt.figure()
         ax = fig.add_subplot(111)
         ax.plot(pose_est[:,0], pose_est[:,1], marker='o')
-        ax.plot(poses_gt[:num_images,0].cpu(), poses_gt[:num_images,1].cpu(), marker='o')
+        ax.plot(poses_gt[:,0].cpu(), poses_gt[:,1].cpu(), marker='o')
     else:
         fig = None
 

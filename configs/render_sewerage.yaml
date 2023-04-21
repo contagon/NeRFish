@@ -40,8 +40,8 @@ sampler:
   type: stratified
   n_pts_per_ray: 64
 
-  min_depth: 1.2
-  max_depth: 6.28
+  min_depth: 1
+  max_depth: 5
 
 implicit_function:
   type: nerf

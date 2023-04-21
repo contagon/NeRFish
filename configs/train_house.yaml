@@ -4,11 +4,11 @@ type: train
 
 training:
   num_epochs: 10000
-  batch_size: 4096
+  batch_size: 2048
   lr: 0.0005
 
   lr_scheduler_step_size: 1000
-  lr_scheduler_gamma: 0.999
+  lr_scheduler_gamma: 0.9
 
   checkpoint_path: ./checkpoints/house
   checkpoint_interval: 50
@@ -35,10 +35,10 @@ renderer:
 
 sampler:
   type: stratified
-  n_pts_per_ray: 64
+  n_pts_per_ray: 128
 
-  min_depth: 1.2
-  max_depth: 6.28
+  min_depth: 0.25
+  max_depth: 2.5
 
 implicit_function:
   type: nerf
