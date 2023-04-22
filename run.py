@@ -8,6 +8,7 @@ import torch
 import tqdm
 from omegaconf import DictConfig
 import matplotlib.pyplot as plt
+from  datetime import datetime
 
 import pypose as pp
 from fish_nerf.models import volume_dict, LinearSphereModel, PoseModel
@@ -155,8 +156,19 @@ def train(cfg):
     poses_est = train_dataset.poses_gt@noise
     model, camera, pose_model, optimizer, lr_scheduler, start_epoch, checkpoint_path = create_model(cfg, poses_est)
 
+    # Create a results directory. We'll create a subdirectory for each experiment. Each subdirectory will get some recorded data, including photometric_loss.npy, fov_est.npy.
+
+    results_root_dir = 'results'
+    experiment_name = datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
+    results_dir = os.path.join(results_root_dir, experiment_name)
+    os.makedirs(results_dir, exist_ok=False)
+
     # Keep track of the camera poses (NED) seen so far (to sample from for validation).
     seen_camera_poses = set()
+
+    # Keep track of losses and estimated parameters. All lists are of tuples (iteration, value).
+    photometric_loss = []
+    fov_est = []
 
     # Run the main training loop.
     for epoch in range(start_epoch, cfg.training.num_epochs):
@@ -204,6 +216,12 @@ def train(cfg):
             loss.backward()
             optimizer.step()
 
+            # Record the loss and estimated parameters.
+            iteration_abs_num = epoch * len(train_dataloader) + iteration
+            photometric_loss.append((iteration_abs_num, loss.cpu().item()))
+            fov_est.append((iteration_abs_num, camera.forward().cpu().item()))
+
+            # Update the progress bar.
             t_range.set_description(f"Epoch: {epoch:04d}, Loss: {loss:.06f}, FOV: {camera.forward():.03f}, Pose: {pose_error:.04f}")
             t_range.refresh()
 
@@ -229,6 +247,14 @@ def train(cfg):
             }
 
             torch.save(data_to_store, checkpoint_path)
+
+            # Save the photometric loss and estimated fov.
+            print(f"Storing photometric loss and estimated fov to {results_dir}.")
+            photometric_save_path = os.path.join(results_dir, "photometric_loss.npy")
+            fov_save_path = os.path.join(results_dir, "fov_est.npy")
+            np.save(photometric_save_path, np.array(photometric_loss))
+            np.save(fov_save_path, np.array(fov_est))
+
 
         # Render
         if epoch % cfg.training.render_interval == 0 and epoch > 0:
@@ -258,7 +284,8 @@ def train(cfg):
                         num_images=cfg.training.render_num_images,
                         fix_heading = True
                     )
-                    fig.savefig(f'results/training_{epoch}_traj.png')
+                    fig_out_path = os.path.join(results_dir, f"training_{epoch}_traj.png")
+                    fig.savefig(fig_out_path)
                     fig.clf()
 
                 imageio.mimsave(
@@ -277,9 +304,9 @@ def render(
     model.eval()
 
 #     # Render spiral
-#     cameras = create_surround_cameras(3.0, n_poses=20)
-    all_images = render_images(model, cameras, cfg.data.image_shape)
-    imageio.mimsave("results/3d_revolve.gif", [np.uint8(im * 255) for im in all_images])
+    # cameras = create_surround_cameras(3.0, n_poses=20)
+    # all_images = render_images(model, cameras, cfg.data.image_shape)
+    # imageio.mimsave("results/3d_revolve.gif", [np.uint8(im * 255) for im in all_images])
 
 
 @hydra.main(config_path="./configs", config_name="main", version_base=None)
